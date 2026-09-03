@@ -56,8 +56,17 @@ class PaperBroker:
     # --- market state --------------------------------------------------
 
     def set_mark(self, symbol: str, price: Decimal | str) -> None:
-        """Set the price used to fill subsequent orders in ``symbol``."""
+        """Set the price used to fill subsequent orders in ``symbol``.
+
+        Also re-checks every resting order in this symbol: a LIMIT or
+        STOP_MARKET order that was not marketable at submission must still
+        fill once the price later moves to meet it, exactly as it would on a
+        real venue. Fills are only ever evaluated at submission otherwise, so
+        a resting order would sit SUBMITTED forever regardless of where the
+        price went next.
+        """
         self._marks[symbol] = D(price)
+        self._try_fill_resting_orders(symbol)
 
     def set_time(self, when: datetime | None) -> None:
         """Set the simulation clock. ``None`` restores wall-clock time."""
@@ -86,6 +95,7 @@ class PaperBroker:
 
         accepted = order.transition_to(
             OrderStatus.SUBMITTED,
+            now=self._now,
             exchange_order_id=f"paper-{order.client_order_id[-12:]}",
         )
         self._orders[order.client_order_id] = accepted
@@ -105,7 +115,7 @@ class PaperBroker:
                 f"cannot cancel order {client_order_id!r} in terminal state "
                 f"{order.status.value}"
             )
-        cancelled = order.transition_to(OrderStatus.CANCELLED)
+        cancelled = order.transition_to(OrderStatus.CANCELLED, now=self._now)
         self._orders[client_order_id] = cancelled
         return cancelled
 
@@ -114,6 +124,16 @@ class PaperBroker:
 
     def fills_for(self, client_order_id: str) -> list[Fill]:
         return list(self._fills.get(client_order_id, []))
+
+    def _try_fill_resting_orders(self, symbol: str) -> None:
+        mark = self._marks[symbol]
+        for client_order_id, order in list(self._orders.items()):
+            if (
+                order.symbol == symbol
+                and order.status is OrderStatus.SUBMITTED
+                and self._fills_immediately(order, mark)
+            ):
+                self._orders[client_order_id] = self._fill(order, mark)
 
     # --- simulation ----------------------------------------------------
 
@@ -152,6 +172,7 @@ class PaperBroker:
 
         filled = order.transition_to(
             OrderStatus.FILLED,
+            now=self._now,
             filled_quantity=order.quantity,
             average_fill_price=price,
         )

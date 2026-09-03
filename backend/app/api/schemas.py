@@ -11,7 +11,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any
 
-from pydantic import BaseModel, ConfigDict, PlainSerializer
+from pydantic import BaseModel, ConfigDict, Field, PlainSerializer
 
 Money = Annotated[Decimal, PlainSerializer(str, return_type=str)]
 OptMoney = Annotated[Decimal | None, PlainSerializer(lambda v: None if v is None else str(v))]
@@ -171,7 +171,7 @@ class PerformanceOut(Base):
     ending_equity: Money
     total_return: Money
     sharpe_ratio: Money
-    sortino_ratio: Money
+    sortino_ratio: OptMoney = None
     max_drawdown: Money
     calmar_ratio: OptMoney = None
     win_rate: Money
@@ -188,8 +188,8 @@ class BacktestRequest(BaseModel):
     strategy: str = "ema_crossover"
     symbol: str = "BTCUSDT"
     interval: str = "1h"
-    bars: int = 500
-    starting_balance: Decimal = Decimal("100000")
+    bars: int = Field(default=500, ge=1, le=1500)
+    starting_balance: Decimal = Field(default=Decimal("100000"), gt=0)
     parameters: dict[str, Any] = {}
 
 

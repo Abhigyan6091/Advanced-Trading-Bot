@@ -93,7 +93,11 @@ class PortfolioSnapshot(BaseModel):
     def open_positions(self) -> tuple[Position, ...]:
         return tuple(p for p in self.positions if not p.is_flat)
 
-    def to_account(self, volatility: Decimal | None = None) -> AccountSnapshot:
+    def to_account(
+        self,
+        volatility: Decimal | None = None,
+        ml_features: dict[str, Decimal] | None = None,
+    ) -> AccountSnapshot:
         """Adapt to the input the risk engine expects.
 
         Keeping this conversion explicit means the risk engine depends on a
@@ -107,6 +111,7 @@ class PortfolioSnapshot(BaseModel):
             daily_pnl=self.daily_pnl,
             peak_equity=max(self.peak_equity, self.equity),
             volatility=volatility,
+            ml_features=ml_features,
         )
 
 
@@ -122,11 +127,31 @@ class Portfolio:
 
         self._positions: dict[str, Position] = {}
         self._marks: dict[str, Decimal] = {}
-        self._daily: dict[date, Decimal] = {}
+
+        # Equity as of the start of the current day, and which day that is.
+        # Tracks simulated time when the caller supplies it (a backtest or
+        # replay) and real time otherwise, via _roll_day.
+        self._current_day: date | None = None
+        self._day_start_equity: Decimal = self.starting_balance
 
     # --- state ---------------------------------------------------------
 
-    def set_mark(self, symbol: str, price: Decimal | str) -> None:
+    def _roll_day(self, when: datetime) -> None:
+        """Reset the day-start equity mark whenever the day changes.
+
+        Captures equity *before* the caller's own update is applied, so the
+        boundary always reflects "what the account was worth walking into
+        this day" rather than including the very event that triggered the
+        rollover.
+        """
+        day = when.date()
+        if self._current_day is None or day != self._current_day:
+            self._current_day = day
+            self._day_start_equity = self.equity
+
+    def set_mark(self, symbol: str, price: Decimal | str, when: datetime | None = None) -> None:
+        if when is not None:
+            self._roll_day(when)
         self._marks[symbol] = D(price)
         # Marking to market can set a new equity high, which the drawdown
         # calculation depends on.
@@ -156,6 +181,8 @@ class Portfolio:
         Cash moves by the fill's signed value; realised P&L is whatever the
         position accounting recognised on the closed portion.
         """
+        self._roll_day(fill.executed_at)
+
         before = self.position(fill.symbol)
         after = before.apply_fill(fill)
         self._positions[fill.symbol] = after
@@ -165,10 +192,13 @@ class Portfolio:
         self.total_commission += fill.commission
 
         self.cash += fill.net_value
-        self._marks.setdefault(fill.symbol, fill.price)
-
-        day = fill.executed_at.date()
-        self._daily[day] = self._daily.get(day, ZERO) + realized_delta - fill.commission
+        # Always update, not setdefault: the fill price is the most recent
+        # known transaction price for this symbol. Using setdefault here left
+        # every replayed portfolio (every fresh TradingService construction,
+        # since it rebuilds via Portfolio.from_fills on each request) frozen
+        # at the FIRST fill's price forever, silently corrupting equity,
+        # unrealised P&L and every risk ratio derived from it.
+        self._marks[fill.symbol] = fill.price
 
         self.peak_equity = max(self.peak_equity, self.equity)
 
@@ -176,14 +206,21 @@ class Portfolio:
         for fill in sorted(fills, key=lambda f: f.executed_at):
             self.apply_fill(fill)
 
-    def daily_pnl(self, day: date | None = None) -> Decimal:
-        """Realised P&L for a day, net of commission."""
-        day = day or datetime.now(timezone.utc).date()
-        return self._daily.get(day, ZERO)
+    def daily_pnl(self) -> Decimal:
+        """Mark-to-market P&L since the current day began.
+
+        Realised and unrealised combined -- an intraday loss on open exposure
+        must be able to trip the daily-loss check even before anything is
+        closed, which a realised-only figure could never do. "Today" tracks
+        simulated time in a replay (every set_mark/apply_fill call that
+        supplies ``when`` rolls the day forward) and wall-clock time
+        otherwise.
+        """
+        return self.equity - self._day_start_equity
 
     # --- output --------------------------------------------------------
 
-    def snapshot(self, day: date | None = None) -> PortfolioSnapshot:
+    def snapshot(self) -> PortfolioSnapshot:
         return PortfolioSnapshot(
             cash=self.cash,
             positions=self.positions,
@@ -192,7 +229,7 @@ class Portfolio:
             total_commission=self.total_commission,
             starting_balance=self.starting_balance,
             peak_equity=self.peak_equity,
-            daily_pnl=self.daily_pnl(day),
+            daily_pnl=self.daily_pnl(),
         )
 
     @classmethod

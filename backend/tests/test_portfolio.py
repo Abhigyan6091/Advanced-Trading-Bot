@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 
 import pytest
@@ -92,16 +92,44 @@ class TestPnl:
         assert snapshot.unrealized_pnl == Decimal("3000")
         assert snapshot.total_pnl == Decimal("5000")
 
-    def test_daily_pnl_is_net_of_commission(self, portfolio):
-        portfolio.apply_fill(fill(Side.BUY, "1", "60000", commission="24"))
-        portfolio.apply_fill(fill(Side.SELL, "1", "62000", commission="24.8"))
-        assert portfolio.daily_pnl(T0.date()) == Decimal("2000") - Decimal("48.8")
+    def test_daily_pnl_is_mark_to_market_not_realised_only(self, portfolio):
+        """The daily-loss check must see an intraday loss before anything closes.
 
-    def test_daily_pnl_is_partitioned_by_day(self, portfolio):
+        A realised-only figure -- the previous implementation -- reports zero
+        here even though the account is genuinely down for the day, so the
+        hard daily-loss check could never trip on an open, losing position.
+        """
         portfolio.apply_fill(fill(Side.BUY, "1", "60000", at=T0))
-        portfolio.apply_fill(fill(Side.SELL, "1", "62000", at=T0 + timedelta(days=1)))
-        assert portfolio.daily_pnl(T0.date()) == 0
-        assert portfolio.daily_pnl((T0 + timedelta(days=1)).date()) == Decimal("2000")
+        portfolio.set_mark("BTCUSDT", "55000", when=T0)
+        assert portfolio.daily_pnl() == Decimal("-5000")
+
+    def test_daily_pnl_nets_realised_and_unrealised(self, portfolio):
+        portfolio.apply_fill(fill(Side.BUY, "2", "60000", commission="24", at=T0))
+        portfolio.apply_fill(fill(Side.SELL, "1", "62000", commission="24.8", at=T0))
+        portfolio.set_mark("BTCUSDT", "63000", when=T0)
+        # Realised: (62000-60000)*1 - 48.8 = 1951.2. Unrealised on the
+        # remaining 1: (63000-60000)*1 = 3000. Total swing since day start: 4951.2.
+        assert portfolio.daily_pnl() == Decimal("1951.2") + Decimal("3000")
+
+    def test_daily_pnl_resets_when_the_day_changes(self, portfolio):
+        portfolio.apply_fill(fill(Side.BUY, "1", "60000", at=T0))
+        portfolio.set_mark("BTCUSDT", "62000", when=T0)
+        assert portfolio.daily_pnl() == Decimal("2000")
+
+        next_day = T0 + timedelta(days=1)
+        portfolio.set_mark("BTCUSDT", "62000", when=next_day)
+        # Same mark, new day: the swing since day start is zero again.
+        assert portfolio.daily_pnl() == Decimal("0")
+
+        portfolio.set_mark("BTCUSDT", "61000", when=next_day)
+        assert portfolio.daily_pnl() == Decimal("-1000")
+
+    def test_daily_pnl_tracks_simulated_time_not_wall_clock(self, portfolio):
+        """A replay over historical bars must not silently read as day zero."""
+        old_time = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        portfolio.apply_fill(fill(Side.BUY, "1", "60000", at=old_time))
+        portfolio.set_mark("BTCUSDT", "65000", when=old_time)
+        assert portfolio.daily_pnl() == Decimal("5000")
 
 
 class TestExposure:

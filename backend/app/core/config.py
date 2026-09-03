@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     paper_commission_rate: Decimal = Decimal("0.0004")
     paper_slippage_bps: Decimal = Decimal("2")
 
+    # --- ML-assisted risk ------------------------------------------------
+    #: Whether the risk engine may load a trained adverse-outcome model. Even
+    #: when true, the model only engages if one has actually been trained and
+    #: saved to disk (see scripts.train_risk_model) -- a fresh checkout has no
+    #: model file, so this flag alone never changes behaviour by itself.
+    ml_risk_enabled: bool = True
+
     @field_validator("log_level")
     @classmethod
     def _upper(cls, v: str) -> str:

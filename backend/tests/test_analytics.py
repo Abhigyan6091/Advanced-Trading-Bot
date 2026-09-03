@@ -88,17 +88,29 @@ class TestSharpe:
 
 
 class TestSortino:
-    def test_upside_volatility_is_not_penalised(self):
-        """Sortino's whole point: only downside deviation is risk."""
+    def test_upside_volatility_is_undefined_not_zero(self):
+        """A strictly profitable run has no downside to penalise.
+
+        None, not 0: scoring it identically to a flat, going-nowhere curve
+        would understate a genuinely riskless winning streak.
+        """
         upside_only = curve(100, 130, 160, 200)
-        assert sortino_ratio(upside_only) == 0  # no downside deviation at all
+        assert sortino_ratio(upside_only) is None
 
     def test_downside_is_penalised(self):
-        assert sortino_ratio(curve(100, 95, 105, 90, 110)) != 0
+        result = sortino_ratio(curve(100, 95, 105, 90, 110))
+        assert result is not None
+        assert result != 0
 
     def test_sortino_exceeds_sharpe_for_upward_skew(self):
         c = curve(100, 120, 118, 145, 143, 175)
-        assert sortino_ratio(c) > sharpe_ratio(c)
+        sortino = sortino_ratio(c)
+        assert sortino is not None
+        assert sortino > sharpe_ratio(c)
+
+    def test_zero_downside_deviation_is_also_undefined(self):
+        """Downside moves that are all exactly zero-sized give no deviation."""
+        assert sortino_ratio(curve(100, 100, 100, 100)) is None
 
 
 class TestTradeStatistics:

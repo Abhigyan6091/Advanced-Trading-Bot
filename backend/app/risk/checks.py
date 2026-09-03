@@ -63,6 +63,32 @@ class RiskCheck(ABC):
         )
 
     @staticmethod
+    def _projected_gross_exposure(
+        account: AccountSnapshot, symbol: str, side: Side, quantity: Decimal, price: Decimal
+    ) -> Decimal:
+        """Gross exposure across the book if this trade were applied.
+
+        Replaces ``symbol``'s current contribution with its *resulting*
+        contribution rather than naively adding the order's notional to the
+        current total. Naive addition scores a closing or de-risking trade as
+        if it were opening a new position of the same size -- exactly
+        backwards for an order that reduces exposure.
+        """
+        existing = account.position(symbol)
+        delta = side.sign * quantity
+        resulting_quantity = abs(existing.signed_quantity + delta)
+
+        # gross_exposure values every position at its stored mark price,
+        # so this symbol's existing contribution must be backed out using
+        # that same mark -- not the trade's own price -- or the subtraction
+        # would not actually cancel what was added when the total was built.
+        # A symbol with no mark yet has no existing position either, so its
+        # contribution is zero regardless of which price is used.
+        existing_mark = account.mark(symbol) or price
+        other_exposure = account.gross_exposure - existing.notional_value(existing_mark)
+        return other_exposure + notional(resulting_quantity, price)
+
+    @staticmethod
     def _ratio_score(observed: Decimal, limit: Decimal) -> Decimal:
         """Grade utilisation of a limit onto 0-100.
 
@@ -127,7 +153,7 @@ class PortfolioExposureCheck(RiskCheck):
     weight = Decimal("1.2")
 
     def evaluate(self, *, symbol, side, quantity, price, account, limits):
-        projected = account.gross_exposure + notional(quantity, price)
+        projected = self._projected_gross_exposure(account, symbol, side, quantity, price)
         pct = projected / account.equity
         limit = limits.max_portfolio_exposure_pct
 
@@ -153,7 +179,8 @@ class LeverageCheck(RiskCheck):
     weight = Decimal("1.2")
 
     def evaluate(self, *, symbol, side, quantity, price, account, limits):
-        projected = (account.gross_exposure + notional(quantity, price)) / account.equity
+        exposure = self._projected_gross_exposure(account, symbol, side, quantity, price)
+        projected = exposure / account.equity
         limit = limits.max_leverage
 
         passed = projected <= limit
@@ -282,6 +309,59 @@ class OrderValueCheck(RiskCheck):
             limit=limit,
             reason=(
                 f"Order value {value:,.2f} exceeds the {limit:,.2f} maximum"
+                if not passed
+                else ""
+            ),
+        )
+
+
+class MLAdverseOutcomeCheck(RiskCheck):
+    """Estimates the probability a proposed trade ends adversely.
+
+    Assists the seven deterministic checks; it does not replace them, and it
+    cannot authorise anything by itself -- like every other check it only ever
+    contributes one weighted score into the engine's blend. When no model is
+    loaded or the feature window is not yet warm, this check passes neutrally,
+    which is what makes the model an optional, disableable input rather than a
+    dependency the pipeline requires to function.
+    """
+
+    name = "ml_adverse_outcome"
+    weight = Decimal("1.0")
+
+    def __init__(self, model: object) -> None:
+        self.model = model
+
+    def evaluate(self, *, symbol, side, quantity, price, account, limits):
+        market_features = account.ml_features
+        if market_features is None or not getattr(self.model, "is_fitted", False):
+            return self._result(passed=True, score=Decimal("25"))
+
+        from app.ml.features import position_pct
+
+        features = {
+            **market_features,
+            "position_pct": position_pct(
+                account.position(symbol), side, quantity, price, account.equity
+            ),
+            # Read live off the account rather than duplicated inside
+            # ml_features, since AccountSnapshot already computes it.
+            "drawdown": account.drawdown,
+        }
+        probability = self.model.predict_proba(features)
+        if probability is None:
+            return self._result(passed=True, score=Decimal("25"))
+
+        limit = limits.max_adverse_probability
+        passed = probability <= limit
+        return self._result(
+            passed=passed,
+            score=self._ratio_score(probability, limit),
+            observed=probability,
+            limit=limit,
+            reason=(
+                f"Model estimates a {_pct(probability)} chance of an adverse "
+                f"outcome, against a {_pct(limit)} ceiling"
                 if not passed
                 else ""
             ),

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -166,3 +167,103 @@ class TestNoLiveBroker:
 
         with pytest.raises(ValueError, match="credentials are required"):
             BinanceTestnetBroker("", "")
+
+
+class TestSimulatedClockAppliesToTransitions:
+    """Regression: transition_to always stamped updated_at with wall-clock
+    time, so a replayed order's history mixed a simulated created_at with a
+    real-time updated_at -- persisted order rows for historical replays were
+    dated today no matter which period they simulated.
+    """
+
+    def test_a_filled_orders_updated_at_uses_the_simulated_clock(self, broker):
+        simulated = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        broker.set_time(simulated)
+
+        order = broker.submit(Order.from_request(request(), now=simulated))
+
+        assert order.status is OrderStatus.FILLED
+        assert order.updated_at == simulated
+
+    def test_cancellation_also_uses_the_simulated_clock(self, broker):
+        simulated = datetime(2020, 1, 1, tzinfo=timezone.utc)
+        broker.set_time(simulated)
+
+        order = broker.submit(
+            Order.from_request(
+                request(order_type=OrderType.LIMIT, price=Decimal("59000")), now=simulated
+            )
+        )
+        cancelled = broker.cancel(order.client_order_id)
+
+        assert cancelled.updated_at == simulated
+
+
+class TestRestingOrdersFillWhenTheMarketMoves:
+    """Regression: fills were only ever evaluated at submission time, so a
+    LIMIT or STOP order that was not marketable when placed stayed SUBMITTED
+    forever, even after the price later moved to meet it -- unlike a real
+    venue, which fills a resting order the moment it becomes marketable.
+    """
+
+    def test_a_resting_limit_fills_once_the_mark_reaches_it(self, broker):
+        order = broker.submit(
+            Order.from_request(
+                request(order_type=OrderType.LIMIT, price=Decimal("59000"))
+            )
+        )
+        assert order.status is OrderStatus.SUBMITTED
+
+        broker.set_mark("BTCUSDT", "59000")
+
+        filled = broker.get_order(order.client_order_id)
+        assert filled.status is OrderStatus.FILLED
+
+    def test_a_resting_limit_stays_open_while_still_unreachable(self, broker):
+        order = broker.submit(
+            Order.from_request(
+                request(order_type=OrderType.LIMIT, price=Decimal("50000"))
+            )
+        )
+        broker.set_mark("BTCUSDT", "58000")  # still above the 50,000 buy limit
+
+        still_resting = broker.get_order(order.client_order_id)
+        assert still_resting.status is OrderStatus.SUBMITTED
+
+    def test_a_resting_stop_triggers_once_the_mark_passes_it(self, broker):
+        order = broker.submit(
+            Order.from_request(
+                request(
+                    side=Side.SELL, order_type=OrderType.STOP_MARKET, stop_price=Decimal("58000")
+                )
+            )
+        )
+        assert order.status is OrderStatus.SUBMITTED
+
+        broker.set_mark("BTCUSDT", "57500")
+
+        filled = broker.get_order(order.client_order_id)
+        assert filled.status is OrderStatus.FILLED
+
+    def test_a_cancelled_order_does_not_come_back_to_life(self, broker):
+        order = broker.submit(
+            Order.from_request(
+                request(order_type=OrderType.LIMIT, price=Decimal("50000"))
+            )
+        )
+        broker.cancel(order.client_order_id)
+
+        broker.set_mark("BTCUSDT", "50000")  # would have been marketable
+
+        still_cancelled = broker.get_order(order.client_order_id)
+        assert still_cancelled.status is OrderStatus.CANCELLED
+
+    def test_a_mark_update_in_an_unrelated_symbol_does_not_touch_it(self, broker):
+        order = broker.submit(
+            Order.from_request(
+                request(order_type=OrderType.LIMIT, price=Decimal("59000"))
+            )
+        )
+        broker.set_mark("ETHUSDT", "3000")
+
+        assert broker.get_order(order.client_order_id).status is OrderStatus.SUBMITTED

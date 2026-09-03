@@ -31,6 +31,7 @@ from app.core.logging import get_logger
 from app.core.money import ZERO, notional
 from app.domain import (
     Instrument,
+    Position,
     RiskAction,
     RiskCheckResult,
     RiskDecision,
@@ -38,7 +39,7 @@ from app.domain import (
     Signal,
     SignalAction,
 )
-from app.risk.checks import DEFAULT_CHECKS, RiskCheck
+from app.risk.checks import DEFAULT_CHECKS, MLAdverseOutcomeCheck, RiskCheck
 from app.risk.limits import AccountSnapshot, RiskLimits
 
 log = get_logger(__name__)
@@ -57,10 +58,20 @@ class RiskEngine:
         limits: RiskLimits | None = None,
         checks: tuple[RiskCheck, ...] = DEFAULT_CHECKS,
         hard_checks: frozenset[str] = HARD_CHECKS,
+        ml_model: object | None = None,
     ) -> None:
         self.limits = limits or RiskLimits()
-        self.checks = checks
         self.hard_checks = hard_checks
+
+        # The ML check is additive and opt-in: passing no model (the default)
+        # leaves `checks` exactly as given, so every existing caller -- and
+        # every test written before this feature existed -- is unaffected.
+        # A model is only ever appended, never substituted for a deterministic
+        # check, because it assists the engine rather than replacing any part
+        # of it.
+        if ml_model is not None:
+            checks = (*checks, MLAdverseOutcomeCheck(ml_model))
+        self.checks = checks
 
     # --- public API ----------------------------------------------------
 
@@ -87,6 +98,19 @@ class RiskEngine:
         if price <= ZERO:
             raise ValueError("price must be positive")
 
+        # Round to the exchange grid before anything downstream sees the
+        # quantity. This makes `requested_quantity` on the decision the
+        # quantity the venue could actually accept, which is what keeps an
+        # APPROVE (required to equal the requested quantity exactly) from
+        # conflicting with grid rounding applied after the fact.
+        if instrument is not None:
+            quantity = instrument.round_quantity(quantity)
+            if quantity <= ZERO:
+                raise ValueError(
+                    f"requested quantity rounds to zero at {symbol}'s step "
+                    f"size ({instrument.step_size})"
+                )
+
         results = tuple(
             check.evaluate(
                 symbol=symbol,
@@ -101,11 +125,15 @@ class RiskEngine:
 
         score = self._blend(results)
         action = self._verdict(score, results)
-        approved = self._size(action, results, quantity, price, account, instrument)
+        approved = self._size(
+            action, results, symbol, side, quantity, price, account, instrument
+        )
 
         # Sizing can find no tradeable quantity — below the exchange minimum,
-        # say. That is a rejection, not a zero-size approval.
-        if action is RiskAction.REDUCE and approved <= ZERO:
+        # say. That is a rejection, not a zero-size approval or a zero-size
+        # "approval" that would violate RiskDecision's own invariant (an
+        # APPROVE must carry the full requested quantity).
+        if action is not RiskAction.REJECT and approved <= ZERO:
             action = RiskAction.REJECT
             approved = ZERO
             results = (*results, self._unfundable_result())
@@ -206,6 +234,8 @@ class RiskEngine:
         self,
         action: RiskAction,
         results: tuple[RiskCheckResult, ...],
+        symbol: str,
+        side: Side,
         quantity: Decimal,
         price: Decimal,
         account: AccountSnapshot,
@@ -213,10 +243,20 @@ class RiskEngine:
     ) -> Decimal:
         if action is RiskAction.REJECT:
             return ZERO
+
         if action is RiskAction.APPROVE:
+            # `quantity` is already grid-rounded (assess() does this up
+            # front), so only the minimum-notional/minimum-quantity floor can
+            # still be violated here. A quantity below that floor cannot be
+            # approved as-is; the caller sees this as a REJECT via the
+            # approved<=0 downgrade in assess().
+            if instrument is not None and not instrument.is_tradeable(quantity, price):
+                return ZERO
             return quantity
 
-        allowed = self._largest_permitted_quantity(results, quantity, price, account)
+        allowed = self._largest_permitted_quantity(
+            results, symbol, side, quantity, price, account
+        )
         allowed = min(allowed, quantity)
 
         if instrument is not None:
@@ -239,36 +279,52 @@ class RiskEngine:
     def _largest_permitted_quantity(
         self,
         results: tuple[RiskCheckResult, ...],
+        symbol: str,
+        side: Side,
         quantity: Decimal,
         price: Decimal,
         account: AccountSnapshot,
     ) -> Decimal:
         """Size down to the tightest binding limit.
 
-        Each size-sensitive check implies a maximum quantity; the smallest of
-        those governs. Checks that do not depend on size (drawdown, daily loss,
-        volatility) cannot be sized around and are excluded.
+        Each size-sensitive check implies a maximum order quantity; the
+        smallest of those governs. Checks that do not depend on size
+        (drawdown, daily loss, volatility) cannot be sized around and are
+        excluded.
+
+        Every cap below accounts for the position or exposure already on the
+        book -- an order that is *reducing* the very thing a check flagged has
+        more headroom than one that is adding to it, and a cap computed as if
+        the account were flat would under-size a legitimate exit.
         """
         caps: list[Decimal] = [quantity]
 
         by_name = {r.name: r for r in results}
+        existing = account.position(symbol)
 
         position = by_name.get("position_size")
         if position is not None and not position.passed:
-            caps.append(self.limits.max_position_pct * account.equity / price)
+            max_resulting = self.limits.max_position_pct * account.equity / price
+            # abs(existing.signed_quantity + side.sign * q) <= max_resulting,
+            # solved for the largest non-negative q. See PositionSizeCheck for
+            # the same "resulting position" convention this mirrors.
+            caps.append(
+                max(ZERO, max_resulting - side.sign * existing.signed_quantity)
+            )
 
         exposure = by_name.get("portfolio_exposure")
         if exposure is not None and not exposure.passed:
-            headroom = (
-                self.limits.max_portfolio_exposure_pct * account.equity
-                - account.gross_exposure
+            caps.append(
+                self._headroom_quantity(
+                    account, existing, side, price, self.limits.max_portfolio_exposure_pct
+                )
             )
-            caps.append(headroom / price)
 
         leverage = by_name.get("leverage")
         if leverage is not None and not leverage.passed:
-            headroom = self.limits.max_leverage * account.equity - account.gross_exposure
-            caps.append(headroom / price)
+            caps.append(
+                self._headroom_quantity(account, existing, side, price, self.limits.max_leverage)
+            )
 
         order_value = by_name.get("order_value")
         if order_value is not None and not order_value.passed:
@@ -279,6 +335,37 @@ class RiskEngine:
             caps.append(quantity * Decimal("0.5"))
 
         return max(ZERO, min(caps))
+
+    @staticmethod
+    def _headroom_quantity(
+        account: AccountSnapshot,
+        existing: Position,
+        side: Side,
+        price: Decimal,
+        budget_factor: Decimal,
+    ) -> Decimal:
+        """Largest order quantity that keeps *portfolio-wide* exposure or
+        leverage within budget, given this symbol's existing contribution.
+
+        ``budget_factor`` scales equity into a currency budget either way: a
+        fraction for exposure (0.6 -> 60% of equity) or a raw multiple for
+        leverage (3 -> 3x equity) -- both are just "factor times equity".
+        """
+        budget = budget_factor * account.equity
+        existing_mark = account.mark(existing.symbol) or price
+        other_exposure = account.gross_exposure - existing.notional_value(existing_mark)
+
+        # Budget left for this symbol once every other position's exposure is
+        # accounted for.
+        symbol_budget = budget - other_exposure
+        if symbol_budget <= ZERO:
+            return ZERO
+
+        # Largest resulting quantity in this symbol the remaining budget
+        # allows, then converted into an order quantity the same way the
+        # position-size cap is: accounting for what already exists.
+        max_resulting_qty = symbol_budget / price
+        return max(ZERO, max_resulting_qty - side.sign * existing.signed_quantity)
 
     @staticmethod
     def _unfundable_result() -> RiskCheckResult:

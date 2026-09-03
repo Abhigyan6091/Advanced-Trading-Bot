@@ -40,7 +40,7 @@ trading disagree, that is a bug — not an expected difference.
 | 4 | Portfolio, orders, execution | ✅ Complete |
 | 5 | Backtesting + analytics | ✅ Complete |
 | 7 | Dashboard (Next.js) | ✅ Complete |
-| 6 | ML-assisted risk (XGBoost) | Extension |
+| 6 | ML-assisted risk (XGBoost) | ✅ Complete |
 | 8 | AI Analyst, auth, deployment | Extension |
 
 ---
@@ -69,6 +69,20 @@ If ports 5432, 8000 or 3000 are already taken, set `POSTGRES_HOST_PORT`,
 cd backend
 python -m scripts.seed --reset
 ```
+
+### Train the adverse-outcome model (optional)
+
+```bash
+cd backend
+python -m scripts.train_risk_model --symbol BTCUSDT --save
+```
+
+Builds a dataset from stored bars, trains an XGBoost classifier with a
+walk-forward split, and prints its out-of-sample AUC and feature importances
+before saving anything -- review the report; `--save` is a separate step so a
+mediocre fit never silently starts influencing live decisions. Without a
+saved model the platform runs its seven deterministic checks exactly as
+before; this step is entirely optional.
 
 Generates a deterministic 30-day price series and runs the **real** pipeline
 over it — the same strategies, risk engine, broker and portfolio the live
@@ -129,10 +143,13 @@ backend/
 │   ├── backtest/      historical replay through the live pipeline
 │   ├── analytics/     metrics shared by live trading and backtests
 │   ├── services/      use cases wired to persistence
+│   ├── ml/            adverse-outcome model: features, labels, dataset, training
 │   ├── db/            SQLAlchemy models, repositories, sessions
 │   └── api/           FastAPI routes, schemas, presenters
 ├── alembic/           migrations
-├── scripts/seed.py    deterministic demo history
+├── scripts/
+│   ├── seed.py                deterministic demo history
+│   └── train_risk_model.py    trains and saves the adverse-outcome model
 └── tests/
 
 frontend/
@@ -194,6 +211,17 @@ closing at *t* is executed at the open of bar *t+1*, never at *t*'s close —
 that price is only knowable once the bar has finished. The loop enforces this
 structurally, and a `LookAheadError` assertion fails the run if a future
 refactor breaks it.
+
+**The ML model assists; it never authorises.** MLAdverseOutcomeCheck is one
+weighted input among eight, appended to the risk engine only when a trained
+model file exists (`RiskEngine(ml_model=...)`) -- a fresh checkout has none,
+so the platform runs identically to before this feature existed. It cannot
+reject a trade by itself: only a hard-check failure (daily loss, drawdown) or
+a gross breach can do that. Labels are built with the triple-barrier method
+over historical bars -- offline only, never in the live or backtest path,
+where the outcome is not yet known -- and training uses a walk-forward split,
+never a random one, so the model is never evaluated on data from before the
+period it trained on.
 
 **The dashboard's charts follow one colour system.** Series identity comes from
 a fixed categorical order assigned per entity, so sorting never repaints a

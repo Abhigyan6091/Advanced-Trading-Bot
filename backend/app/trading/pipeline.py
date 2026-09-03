@@ -102,6 +102,11 @@ class TradingPipeline:
         if isinstance(self.broker, PaperBroker):
             self.broker.set_time(when)
 
+    @property
+    def now(self) -> datetime | None:
+        """The simulated instant, or ``None`` for wall-clock time."""
+        return self._now
+
     # --- main entry point ----------------------------------------------
 
     def handle_signal(
@@ -110,6 +115,7 @@ class TradingPipeline:
         *,
         quantity: Decimal | None = None,
         volatility: Decimal | None = None,
+        ml_features: dict[str, Decimal] | None = None,
     ) -> TradeOutcome:
         """Take one signal all the way through the pipeline."""
         if not signal.is_actionable:
@@ -128,7 +134,9 @@ class TradingPipeline:
         decision = self.risk_engine.assess_signal(
             signal,
             quantity=requested,
-            account=self.portfolio.snapshot().to_account(volatility=volatility),
+            account=self.portfolio.snapshot().to_account(
+                volatility=volatility, ml_features=ml_features
+            ),
             instrument=instrument,
             now=self._now,
         )
@@ -169,6 +177,13 @@ class TradingPipeline:
         try:
             submitted = self.broker.submit(order)
         except BrokerError as exc:
+            # Known gap, deferred to Phase 8: a BrokerUnavailable here may
+            # mean the order landed at the venue despite the failure (a
+            # timeout after acceptance, say). This records the failure and
+            # moves on rather than re-querying the venue to find out --
+            # reconciling against actual venue state belongs with the
+            # execution-service hardening Phase 8 introduces, not bolted on
+            # ahead of the auth and retry design that phase settles.
             outcome = TradeOutcome(signal=signal, decision=decision, error=str(exc))
             self.history.append(outcome)
             log.warning("pipeline.execution_failed", symbol=signal.symbol, error=str(exc))
@@ -192,7 +207,14 @@ class TradingPipeline:
         every limit is applied downstream of this number.
         """
         equity = self.portfolio.equity
-        budget = equity * self.default_risk_fraction * (signal.strength or D("1"))
+        # Not `signal.strength or D("1")`: Decimal("0") is falsy in Python, so
+        # that fallback silently turned a genuinely zero-confidence signal
+        # into a FULL-size proposal -- the exact opposite of what strength=0
+        # means. A signal's strength is never None (Signal enforces a
+        # default), so no fallback is needed; a zero-strength signal simply
+        # proposes zero quantity, which the caller already treats as
+        # "nothing to trade".
+        budget = equity * self.default_risk_fraction * signal.strength
         quantity = budget / signal.reference_price
 
         instrument = self.instruments.get(signal.symbol)

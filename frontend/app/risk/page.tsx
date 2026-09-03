@@ -30,6 +30,7 @@ const LIMIT_LABELS: Record<string, string> = {
   gross_breach_multiple: "Gross-breach multiple",
   reject_score: "Reject at score",
   reduce_score: "Reduce at score",
+  max_adverse_probability: "Max adverse probability (ML)",
 };
 
 function DecisionDetail({ decision }: { decision: RiskDecision }) {

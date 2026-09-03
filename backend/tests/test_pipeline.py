@@ -180,3 +180,20 @@ class TestHistory:
         # Re-submitting the very same order object is what a retry looks like.
         pipeline.broker.submit(first.order)
         assert len(pipeline.broker.all_fills) == 1
+
+
+class TestZeroStrengthSizing:
+    def test_a_zero_strength_signal_proposes_zero_not_full_size(self, pipeline):
+        """Regression: `strength or D("1")` treated Decimal("0") as falsy,
+        silently turning the weakest possible signal into the largest one.
+        """
+        weak = signal(strength="0")
+        outcome = pipeline.handle_signal(weak)
+        assert outcome.error == "proposed quantity is zero"
+        assert outcome.order is None
+
+    def test_proposed_size_scales_linearly_with_strength(self, pipeline):
+        full = pipeline._proposed_quantity(signal(strength="1"))
+        half = pipeline._proposed_quantity(signal(strength="0.5"))
+        # Approximately half: exchange-step rounding prevents an exact ratio.
+        assert abs(half - full / 2) <= Decimal("0.001")

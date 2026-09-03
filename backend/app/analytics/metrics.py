@@ -103,8 +103,15 @@ def sharpe_ratio(
 
 def sortino_ratio(
     equity_curve: list[Decimal], interval: str = "1h", risk_free_rate: Decimal = ZERO
-) -> Decimal:
-    """Sharpe's downside-only counterpart: upside volatility is not a risk."""
+) -> Decimal | None:
+    """Sharpe's downside-only counterpart: upside volatility is not a risk.
+
+    ``None`` when there is no downside deviation to divide by -- a strictly
+    profitable run has nothing to penalise, and reporting 0 there would score
+    it identically to a flat curve with no returns at all. Matches how
+    profit_factor and calmar_ratio already report "undefined" rather than a
+    number that would mislead.
+    """
     series = returns(equity_curve)
     if len(series) < 2:
         return ZERO
@@ -118,10 +125,10 @@ def sortino_ratio(
 
         downside = [r for r in excess if r < ZERO]
         if not downside:
-            return ZERO
+            return None
         deviation = (sum(r**2 for r in downside) / len(excess)).sqrt()
         if deviation <= ZERO:
-            return ZERO
+            return None
         return (mean / deviation) * Decimal(periods).sqrt()
 
 
@@ -186,7 +193,7 @@ class PerformanceReport(NamedTuple):
     ending_equity: Decimal
     total_return: Decimal
     sharpe_ratio: Decimal
-    sortino_ratio: Decimal
+    sortino_ratio: Decimal | None
     max_drawdown: Decimal
     calmar_ratio: Decimal | None
     win_rate: Decimal
@@ -247,3 +254,24 @@ def build_report(
         winning_trades=sum(1 for t in trades if t.pnl > ZERO),
         losing_trades=sum(1 for t in trades if t.pnl < ZERO),
     )
+
+
+def realized_volatility_annualised(
+    closes: list[Decimal], lookback: int = 24, interval: str = "1h"
+) -> Decimal | None:
+    """Annualised realised volatility over the trailing ``lookback`` bars.
+
+    Shared by every caller that feeds the risk engine's volatility check --
+    the live pipeline, the backtester and the seed script -- so a backtest and
+    a live run apply the same volatility figure to the same price path rather
+    than silently diverging.
+    """
+    from app.strategies.indicators import realized_volatility
+
+    if len(closes) <= lookback:
+        return None
+    hourly = realized_volatility(closes, lookback)[-1]
+    if hourly is None:
+        return None
+    periods = PERIODS_PER_YEAR.get(interval, 8_760)
+    return hourly * Decimal(periods).sqrt()

@@ -55,6 +55,53 @@ class TestDomainPurity:
                     )
 
 
+class TestMLIsolation:
+    """The adverse-outcome model assists the risk score; it cannot trade.
+
+    Structurally identical guarantee to strategy isolation: if app.ml could
+    reach a broker or construct an Order, "the model assists but never
+    executes" would be a comment, not a fact a test can fail on.
+    """
+
+    FORBIDDEN = ("app.brokers", "app.trading", "app.api", "binance")
+
+    @pytest.mark.parametrize("path", modules_in("ml"), ids=lambda p: p.name)
+    def test_ml_cannot_reach_execution(self, path):
+        offending = [
+            imp
+            for imp in imports_of(path)
+            for bad in self.FORBIDDEN
+            if imp == bad or imp.startswith(bad + ".")
+        ]
+        assert not offending, f"{path.name} imports execution machinery: {offending}"
+
+    @pytest.mark.parametrize("path", modules_in("ml"), ids=lambda p: p.name)
+    def test_ml_does_not_construct_orders_or_decisions(self, path):
+        """It contributes one score to the engine; it authorises nothing."""
+        names = {
+            n.id for n in ast.walk(ast.parse(path.read_text())) if isinstance(n, ast.Name)
+        }
+        assert not names & {"Order", "OrderRequest", "RiskDecision"}, (
+            f"{path.name} references order or decision types"
+        )
+
+    def test_the_ml_check_is_never_in_the_default_checks_tuple(self):
+        """Absence by default: the model only ever appends, and only when a
+        caller explicitly loads one and passes it to RiskEngine.
+        """
+        from app.risk.checks import DEFAULT_CHECKS
+        from app.risk.engine import MLAdverseOutcomeCheck
+
+        assert not any(isinstance(c, MLAdverseOutcomeCheck) for c in DEFAULT_CHECKS)
+
+    def test_a_fresh_engine_with_no_model_behaves_identically_to_one_with_none_explicit(self):
+        from app.risk import RiskEngine
+
+        implicit = RiskEngine()
+        explicit = RiskEngine(ml_model=None)
+        assert implicit.checks == explicit.checks
+
+
 class TestStrategyIsolation:
     """Strategies propose; they cannot execute.
 

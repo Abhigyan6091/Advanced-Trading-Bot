@@ -25,7 +25,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from decimal import Decimal
 
-from app.analytics import PerformanceReport, TradeRecord, build_report
+from app.analytics import (
+    PerformanceReport,
+    TradeRecord,
+    build_report,
+    realized_volatility_annualised,
+)
 from app.brokers import PaperBroker
 from app.core.logging import get_logger
 from app.core.money import ZERO, D
@@ -175,8 +180,20 @@ class Backtester:
             decision_bar = bars[i]
             execution_bar = bars[i + 1]
 
-            # Mark using the close of the bar just decided on -- known now.
-            portfolio.set_mark(symbol, decision_bar.close)
+            # Mark and record equity for THIS bar's close before evaluating
+            # anything new. This must happen first, not last: a signal decided
+            # here fills at execution_bar's OPEN, which is chronologically
+            # AFTER decision_bar's close. Recording equity after applying that
+            # fill (the previous ordering) would book a position acquired at
+            # t+1 into the curve point for t, valued at t's price -- a swing
+            # that only existed because of when the code happened to look,
+            # and that unwound itself on the very next bar. Fills from a prior
+            # iteration are correctly already reflected here, since those
+            # executed at THIS bar's open, before THIS bar's close.
+            portfolio.set_mark(symbol, decision_bar.close, when=decision_bar.close_time)
+            result.equity_curve.append(portfolio.equity)
+            result.timestamps.append(decision_bar.close_time)
+            result.bars_processed += 1
 
             if i + 1 >= self.strategy.min_bars:
                 window = bars[: i + 1]
@@ -191,26 +208,34 @@ class Backtester:
                     # Stamp the decision, order and fill with the bar they
                     # happened on rather than wall-clock time.
                     pipeline.set_time(execution_bar.open_time)
-                    outcome = pipeline.handle_signal(signal)
+
+                    # The volatility check must see the same figure a live run
+                    # would compute from this window -- previously this was
+                    # never passed here, so every backtest silently ran with
+                    # volatility=None and that check never actually engaged.
+                    volatility = realized_volatility_annualised(
+                        [b.close for b in window], interval=self.interval
+                    )
+                    outcome = pipeline.handle_signal(signal, volatility=volatility)
                     result.outcomes.append(outcome)
 
                     if outcome.fills:
                         result.fills.extend(outcome.fills)
                         realized_now = portfolio.realized_pnl
                         if realized_now != realized_before:
+                            # Net of commission, matching the convention the
+                            # live performance endpoint uses (app.api.routes.
+                            # performance) -- a trade that only lost its
+                            # commission must not count as a win in either
+                            # place, and the two must agree on the same fills.
+                            commission = sum((f.commission for f in outcome.fills), ZERO)
                             result.trades.append(
-                                TradeRecord(symbol, realized_now - realized_before)
+                                TradeRecord(symbol, realized_now - realized_before - commission)
                             )
                             realized_before = realized_now
 
-            # Record equity at the decision bar's close.
-            portfolio.set_mark(symbol, decision_bar.close)
-            result.equity_curve.append(portfolio.equity)
-            result.timestamps.append(decision_bar.close_time)
-            result.bars_processed += 1
-
         # Mark to the final bar so the closing equity reflects all data.
-        portfolio.set_mark(symbol, bars[-1].close)
+        portfolio.set_mark(symbol, bars[-1].close, when=bars[-1].close_time)
         result.equity_curve.append(portfolio.equity)
         result.timestamps.append(bars[-1].close_time)
 

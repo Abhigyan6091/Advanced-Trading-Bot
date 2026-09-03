@@ -59,7 +59,20 @@ def build_broker(settings: Settings, instruments: dict[str, Instrument]) -> Brok
 
 
 class TradingService:
-    """Runs signals through the pipeline and persists everything they produce."""
+    """Runs signals through the pipeline and persists everything they produce.
+
+    Known constraint, deferred to Phase 8: this service (and the PaperBroker
+    it builds) is currently constructed fresh per call -- correct for
+    scripts.seed, which holds one long-lived instance for an entire replay,
+    but wrong for a request-scoped web session, where a second construction
+    loses the broker's in-memory idempotency table and any marks set on it.
+    No API route calls handle_signal today (the dashboard's routes are
+    read-only, and manual submission is explicitly not wired -- see the Trade
+    page), so this is not yet reachable in practice. A live trading loop
+    needs a process-lifetime broker/session rather than a per-request one;
+    that decision belongs with Phase 8's authentication and execution-service
+    design, not bolted on ahead of it.
+    """
 
     def __init__(
         self,
@@ -82,7 +95,12 @@ class TradingService:
         self.instruments = instruments
 
         self.broker = broker or build_broker(self.settings, instruments)
-        self.risk_engine = RiskEngine(limits or RiskLimits())
+        self._ml_model = None
+        if self.settings.ml_risk_enabled:
+            from app.ml import get_default_model
+
+            self._ml_model = get_default_model()
+        self.risk_engine = RiskEngine(limits or RiskLimits(), ml_model=self._ml_model)
 
         # The portfolio is rebuilt from the stored fill ledger, so restarting
         # the process cannot lose or invent a position.
@@ -106,14 +124,33 @@ class TradingService:
         volatility: Decimal | None = None,
     ) -> TradeOutcome:
         """Run one signal end to end and persist the whole trail."""
+        ml_features = self._compute_ml_features(signal) if self._ml_model else None
         outcome = self.pipeline.handle_signal(
-            signal, quantity=quantity, volatility=volatility
+            signal, quantity=quantity, volatility=volatility, ml_features=ml_features
         )
         self._persist(outcome)
         return outcome
 
+    def _compute_ml_features(self, signal: Signal) -> dict[str, Decimal] | None:
+        """Market features for the ML check, from recently stored bars.
+
+        Only queried when a model is actually loaded -- with ML disabled or
+        absent this adds no database round trip at all.
+        """
+        from app.marketdata import BarRepository
+        from app.ml.features import MIN_BARS, compute_market_features
+
+        bars = BarRepository(self.session).get_bars(
+            signal.symbol, limit=MIN_BARS, end_time=signal.bar_close_time
+        )
+        return compute_market_features(bars)
+
     def set_mark(self, symbol: str, price: Decimal) -> None:
-        self.portfolio.set_mark(symbol, price)
+        # Threads the pipeline's simulated clock, when one is set (a replay
+        # driven by scripts.seed), into the portfolio's day-rollover tracking
+        # -- otherwise "today" for the daily-loss check would be wall-clock
+        # time while every fill is stamped with a simulated one.
+        self.portfolio.set_mark(symbol, price, when=self.pipeline.now)
         if isinstance(self.broker, PaperBroker):
             self.broker.set_mark(symbol, price)
 

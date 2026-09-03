@@ -94,7 +94,11 @@ export default function PerformancePage() {
 
         <Card title="Risk-adjusted returns">
           <Metric label="Sharpe ratio" value={num(p.sharpe_ratio).toFixed(2)} hint={EXPLAIN.sharpe} />
-          <Metric label="Sortino ratio" value={num(p.sortino_ratio).toFixed(2)} hint={EXPLAIN.sortino} />
+          <Metric
+            label="Sortino ratio"
+            value={p.sortino_ratio ? num(p.sortino_ratio).toFixed(2) : "n/a"}
+            hint={EXPLAIN.sortino}
+          />
           <Metric
             label="Calmar ratio"
             value={p.calmar_ratio ? num(p.calmar_ratio).toFixed(2) : "n/a"}

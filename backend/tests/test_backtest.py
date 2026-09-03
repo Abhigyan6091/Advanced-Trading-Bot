@@ -234,3 +234,31 @@ class TestValidation:
             assert result.strategy == name
             report = result.report
             assert Decimal("-1") <= report.max_drawdown <= Decimal("1")
+
+
+class TestNoPhantomEquitySwing:
+    """Regression: equity was recorded for bar i using a position acquired at
+    bar i+1's open, valued at bar i's close -- a swing that existed only
+    because of when the code looked, and unwound itself on the next bar.
+    """
+
+    def test_the_signal_bars_own_equity_point_excludes_its_own_fill(self, btc):
+        """Equity at the decision bar's close must not yet include a position
+        that only starts existing at the following bar's open.
+        """
+        bars = make_bars(RISING)
+        result = Backtester(BuyOnce(at_index=5), instrument=btc, slippage_bps="0").run(bars)
+
+        # The signal at index 5 fills at bars[6].open. Equity recorded for
+        # bars[5].close (index 5 in the curve) must therefore be unchanged
+        # from what it was before that signal -- flat, at starting balance.
+        assert result.equity_curve[5] == result.equity_curve[0]
+
+    def test_the_fill_appears_starting_from_the_next_curve_point(self, btc):
+        bars = make_bars(RISING)
+        result = Backtester(BuyOnce(at_index=5), instrument=btc, slippage_bps="0").run(bars)
+
+        # By bars[6].close, the position from the bars[6].open fill has been
+        # held through a bar of price movement and must show up.
+        assert result.equity_curve[6] != result.equity_curve[5]
+

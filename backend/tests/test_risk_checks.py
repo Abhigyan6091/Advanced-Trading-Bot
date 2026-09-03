@@ -264,3 +264,49 @@ class TestLimitsValidation:
         assert limits.max_position_pct <= Decimal("0.10")
         assert limits.max_leverage <= Decimal("3")
         assert limits.max_daily_loss_pct <= Decimal("0.05")
+
+
+class TestExposureAndLeverageIgnoreClosingTrades:
+    """A closing or de-risking order must not be scored as adding exposure.
+
+    Regression coverage for a defect where PortfolioExposureCheck and
+    LeverageCheck added the order's notional to gross exposure with no regard
+    for direction or the existing position, so an order that FLATTENED an
+    over-exposed book was refused or cut down to almost nothing -- precisely
+    the trade that should always be allowed through.
+    """
+
+    def test_flattening_an_over_exposed_position_passes_exposure(self):
+        held = position("BTCUSDT", Side.BUY, "0.55", "100000")  # 55% of equity
+        acct = account(positions=(held,), mark_prices={"BTCUSDT": Decimal("100000")})
+        closing = run(PortfolioExposureCheck(), qty="0.55", acct=acct, side=Side.SELL)
+        assert closing.passed
+        assert closing.observed == Decimal("0")
+
+    def test_flattening_passes_leverage_too(self):
+        held = position("BTCUSDT", Side.BUY, "0.55", "100000")
+        acct = account(positions=(held,), mark_prices={"BTCUSDT": Decimal("100000")})
+        closing = run(LeverageCheck(), qty="0.55", acct=acct, side=Side.SELL)
+        assert closing.passed
+
+    def test_reducing_partially_still_reads_the_smaller_resulting_exposure(self):
+        held = position("BTCUSDT", Side.BUY, "0.55", "100000")
+        acct = account(positions=(held,), mark_prices={"BTCUSDT": Decimal("100000")})
+        # Selling 0.45 of the 0.55 leaves 0.10 BTC @100,000 = 10% of equity,
+        # not 55%+45%=100% as the naive addition would have scored it.
+        result = run(
+            PortfolioExposureCheck(), qty="0.45", price="100000", acct=acct, side=Side.SELL
+        )
+        assert result.observed == Decimal("0.10")
+
+    def test_opening_a_new_position_is_still_measured_correctly(self):
+        """The fix must not break the ordinary opening case."""
+        result = run(PortfolioExposureCheck(), qty="0.1")
+        assert result.observed == Decimal("0.1") * Decimal("60000") / EQUITY
+
+    def test_other_symbols_exposure_is_unaffected_by_this_symbols_trade(self):
+        eth = position("ETHUSDT", Side.BUY, "10", "5000")  # 50,000 = 50%
+        acct = account(positions=(eth,), mark_prices={"ETHUSDT": Decimal("5000")})
+        # Trading BTC must add on top of ETH's 50%, not replace or ignore it.
+        result = run(PortfolioExposureCheck(), qty="0.1", acct=acct)
+        assert result.observed == (Decimal("50000") + Decimal("6000")) / EQUITY

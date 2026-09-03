@@ -165,12 +165,18 @@ class Order(BaseModel):
             **({"created_at": now, "updated_at": now} if now is not None else {}),
         )
 
-    def transition_to(self, status: OrderStatus, **changes: object) -> Order:
+    def transition_to(
+        self, status: OrderStatus, now: datetime | None = None, **changes: object
+    ) -> Order:
         """Return a new Order in ``status``, refusing illegal moves.
 
         Rebuilt through the constructor rather than ``model_copy``: copying
         does not re-run validators, so the fill-quantity invariants would be
         silently skipped on every state change.
+
+        ``now`` stamps ``updated_at``. A replay passes the bar's own time so a
+        replayed order's history stays on the simulated timeline rather than
+        every state change reading as having happened at wall-clock "now".
         """
         if status not in _TRANSITIONS[self.status]:
             raise IllegalTransition(
@@ -178,7 +184,7 @@ class Order(BaseModel):
                 f"{self.status.value} to {status.value}"
             )
         data = self.model_dump()
-        data.update(status=status, updated_at=_utcnow(), **changes)
+        data.update(status=status, updated_at=now or _utcnow(), **changes)
         return type(self)(**data)
 
     @property

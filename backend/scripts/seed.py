@@ -221,17 +221,16 @@ def main() -> int:
 
 
 def _realised_volatility(bars: list[Bar], lookback: int = 24) -> Decimal | None:
-    """Annualised realised volatility over the recent window."""
-    from app.strategies.indicators import realized_volatility
+    """Annualised realised volatility over the recent window.
 
-    if len(bars) <= lookback:
-        return None
-    closes = [b.close for b in bars]
-    series = realized_volatility(closes, lookback)
-    hourly = series[-1]
-    if hourly is None:
-        return None
-    return hourly * Decimal(8760).sqrt()
+    Delegates to the same helper the backtester uses, so a seeded history and
+    a backtest over the same bars apply an identical volatility figure.
+    """
+    from app.analytics import realized_volatility_annualised
+
+    return realized_volatility_annualised(
+        [b.close for b in bars], lookback=lookback, interval=INTERVAL
+    )
 
 
 if __name__ == "__main__":

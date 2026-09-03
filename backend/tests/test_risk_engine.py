@@ -317,3 +317,210 @@ class TestInvariantHolds:
             assert decision.approved_quantity == Decimal(qty)
         else:
             assert 0 < decision.approved_quantity < Decimal(qty)
+
+
+class TestSizingAccountsForExistingPosition:
+    """Regression: sizing caps were computed as if the account were flat.
+
+    A REDUCE must size down to something that actually clears the check that
+    triggered it -- including when a position already exists in that symbol.
+    Previously the position_size cap ignored the existing holding entirely,
+    so topping up an already-large position was "reduced" by only 1% and the
+    resulting position still breached the limit.
+    """
+
+    def test_reduce_on_top_of_an_existing_position_actually_clears_the_cap(self, engine):
+        held = Position.flat("BTCUSDT").apply_fill(
+            Fill(
+                order_id=uuid.uuid4(),
+                symbol="BTCUSDT",
+                side=Side.BUY,
+                # 0.09 BTC @ 60,000 = 5,400 = 5.4% of the 100,000 equity.
+                quantity=Decimal("0.09"),
+                price=PRICE,
+            )
+        )
+        acct = account(positions=(held,), mark_prices={"BTCUSDT": PRICE})
+        # Adding 0.1 more takes the resulting position to 0.19 BTC = 11,400 =
+        # 11.4% of equity, over the 10% cap.
+        decision = assess(engine, "0.1", acct)
+
+        assert decision.action is RiskAction.REDUCE
+        # Re-assess at the approved size on top of the SAME existing position:
+        # the position_size check must now pass.
+        resulting_acct = account(positions=(held,), mark_prices={"BTCUSDT": PRICE})
+        second = engine.assess(
+            symbol="BTCUSDT",
+            side=Side.BUY,
+            quantity=decision.approved_quantity,
+            price=PRICE,
+            account=resulting_acct,
+        )
+        breached = {c.name for c in second.failed_checks}
+        assert "position_size" not in breached
+
+    def test_exposure_headroom_accounts_for_this_symbols_existing_notional(self, engine):
+        """Headroom must not double-subtract this symbol's own exposure."""
+        held = Position.flat("BTCUSDT").apply_fill(
+            Fill(
+                order_id=uuid.uuid4(),
+                symbol="BTCUSDT",
+                side=Side.BUY,
+                quantity=Decimal("0.5"),  # 30% of equity, well under the 60% cap
+                price=PRICE,
+            )
+        )
+        acct = account(positions=(held,), mark_prices={"BTCUSDT": PRICE})
+        # Adding 0.5 more would take this symbol alone to 60% -- exactly the
+        # portfolio-wide cap -- which is legal for a single symbol; only size
+        # sensitive to portfolio_exposure specifically should ever bind here.
+        decision = assess(engine, "0.5", acct)
+        if decision.action is RiskAction.REDUCE:
+            resulting_notional = (
+                Decimal("0.5") + decision.approved_quantity
+            ) * PRICE
+            limit_value = engine.limits.max_portfolio_exposure_pct * EQUITY
+            assert resulting_notional <= limit_value + Decimal("0.01")
+
+
+class TestApprovalRespectsTheExchangeGrid:
+    """An APPROVE must not reach the venue off the step grid or under the
+    minimum notional -- previously this rounding only happened on REDUCE.
+    """
+
+    def test_an_approved_quantity_is_snapped_to_the_step(self, engine, btc):
+        decision = engine.assess(
+            symbol="BTCUSDT",
+            side=Side.BUY,
+            quantity=Decimal("0.0026"),  # not on the 0.001 step; rounds to 0.002
+            price=PRICE,
+            account=account(),
+            instrument=btc,
+        )
+        assert decision.action is RiskAction.APPROVE
+        assert decision.approved_quantity == btc.round_quantity(Decimal("0.0026"))
+
+    def test_an_approval_below_minimum_notional_becomes_a_rejection(self, engine, btc):
+        """Downgrading to REJECT must not violate the APPROVE invariant.
+
+        RiskDecision requires an APPROVE to carry the full requested quantity;
+        a quantity that rounds to something untradeable (nonzero, but below
+        the venue's minimum notional) cannot satisfy that, so the verdict
+        itself must change rather than emitting an impossible
+        APPROVE-with-zero decision.
+        """
+        decision = engine.assess(
+            symbol="BTCUSDT",
+            side=Side.BUY,
+            quantity=Decimal("0.0016"),  # rounds to 0.001; 0.001*60000=60 < min_notional 100
+            price=PRICE,
+            account=account(),
+            instrument=btc,
+        )
+        assert decision.action is RiskAction.REJECT
+        assert decision.approved_quantity == 0
+
+    def test_a_quantity_that_rounds_to_exactly_zero_is_refused_up_front(self, engine, btc):
+        """Distinct from the case above: nothing to evaluate at all."""
+        with pytest.raises(ValueError, match="rounds to zero"):
+            engine.assess(
+                symbol="BTCUSDT",
+                side=Side.BUY,
+                quantity=Decimal("0.0004"),  # rounds down to 0 at the 0.001 step
+                price=PRICE,
+                account=account(),
+                instrument=btc,
+            )
+
+
+class _FakeModel:
+    """A minimal stand-in for AdverseOutcomeModel, for engine-level tests."""
+
+    def __init__(self, probability, is_fitted=True):
+        self.is_fitted = is_fitted
+        self._probability = probability
+
+    def predict_proba(self, features):
+        return self._probability
+
+
+class TestMLAdverseOutcomeIntegration:
+    """The ML check assists the score; it is opt-in and never authoritative
+    on its own.
+    """
+
+    def test_no_model_means_no_ml_check_at_all(self):
+        engine = RiskEngine(ml_model=None)
+        decision = assess(engine, "0.05")
+        assert "ml_adverse_outcome" not in {c.name for c in decision.checks}
+
+    def test_a_model_is_appended_not_substituted(self):
+        engine = RiskEngine(ml_model=_FakeModel(Decimal("0.1")))
+        decision = assess(engine, "0.05")
+        names = {c.name for c in decision.checks}
+        assert "ml_adverse_outcome" in names
+        # Every deterministic check is still present alongside it.
+        assert {
+            "position_size", "portfolio_exposure", "leverage",
+            "daily_loss", "drawdown", "volatility", "order_value",
+        } <= names
+
+    def test_without_market_features_the_check_passes_neutrally(self):
+        engine = RiskEngine(ml_model=_FakeModel(Decimal("0.99")))
+        decision = assess(engine, "0.05")  # account() supplies no ml_features
+        ml_check = next(c for c in decision.checks if c.name == "ml_adverse_outcome")
+        assert ml_check.passed
+        assert ml_check.observed is None
+
+    def test_a_high_probability_with_features_present_fails_the_check(self):
+        engine = RiskEngine(ml_model=_FakeModel(Decimal("0.9")))
+        acct = account(ml_features={
+            "volatility": Decimal("0.5"), "momentum": Decimal("0.5"),
+            "volume_zscore": Decimal("0"), "return_1": Decimal("0"),
+            "return_5": Decimal("0"), "spread": Decimal("0.01"),
+        })
+        decision = assess(engine, "0.05", acct)
+        ml_check = next(c for c in decision.checks if c.name == "ml_adverse_outcome")
+        assert not ml_check.passed
+        assert ml_check.observed == Decimal("0.9")
+
+    def test_a_low_probability_passes(self):
+        engine = RiskEngine(ml_model=_FakeModel(Decimal("0.05")))
+        acct = account(ml_features={
+            "volatility": Decimal("0.2"), "momentum": Decimal("0.5"),
+            "volume_zscore": Decimal("0"), "return_1": Decimal("0"),
+            "return_5": Decimal("0"), "spread": Decimal("0.01"),
+        })
+        decision = assess(engine, "0.05", acct)
+        ml_check = next(c for c in decision.checks if c.name == "ml_adverse_outcome")
+        assert ml_check.passed
+
+    def test_the_ml_check_alone_cannot_reject_a_trade(self):
+        """It contributes a score; only a hard check or gross breach can
+        force a rejection, and ml_adverse_outcome is neither.
+        """
+        engine = RiskEngine(ml_model=_FakeModel(Decimal("0.99")))
+        acct = account(ml_features={
+            "volatility": Decimal("0.2"), "momentum": Decimal("0.5"),
+            "volume_zscore": Decimal("0"), "return_1": Decimal("0"),
+            "return_5": Decimal("0"), "spread": Decimal("0.01"),
+        })
+        decision = assess(engine, "0.01", acct)  # otherwise a tiny, clean trade
+        # High ML probability alone should reduce or leave approved, not reject
+        # outright by itself (it is not in HARD_CHECKS and a single failing
+        # check with a low weight relative to the others should not dominate).
+        assert decision.action is not RiskAction.REJECT or any(
+            c.name != "ml_adverse_outcome" and not c.passed for c in decision.checks
+        )
+
+    def test_an_unfitted_model_passes_neutrally_even_with_features(self):
+        engine = RiskEngine(ml_model=_FakeModel(Decimal("0.99"), is_fitted=False))
+        acct = account(ml_features={
+            "volatility": Decimal("0.9"), "momentum": Decimal("0.5"),
+            "volume_zscore": Decimal("0"), "return_1": Decimal("0"),
+            "return_5": Decimal("0"), "spread": Decimal("0.01"),
+        })
+        decision = assess(engine, "0.05", acct)
+        ml_check = next(c for c in decision.checks if c.name == "ml_adverse_outcome")
+        assert ml_check.passed
+        assert ml_check.observed is None

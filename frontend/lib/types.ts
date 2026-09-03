@@ -161,7 +161,7 @@ export interface Performance {
   ending_equity: string;
   total_return: string;
   sharpe_ratio: string;
-  sortino_ratio: string;
+  sortino_ratio: string | null;
   max_drawdown: string;
   calmar_ratio: string | null;
   win_rate: string;

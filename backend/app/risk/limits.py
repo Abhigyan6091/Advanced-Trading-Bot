@@ -51,6 +51,10 @@ class RiskLimits(BaseModel):
     #: than refusing it.
     gross_breach_multiple: Decimal = Field(default=Decimal("10"), gt=1)
 
+    #: Probability of an adverse outcome above which the ML check refuses.
+    #: Only engages when a trained model is loaded; otherwise unused.
+    max_adverse_probability: Decimal = Field(default=Decimal("0.65"), gt=0, le=1)
+
     #: Score at or above which a trade is refused outright.
     reject_score: Decimal = Field(default=Decimal("75"), gt=0, le=100)
 
@@ -87,6 +91,16 @@ class AccountSnapshot(BaseModel):
 
     #: Annualised realised volatility of the symbol being traded.
     volatility: Decimal | None = None
+
+    #: Precomputed *market* features for the ML adverse-outcome check --
+    #: volatility, momentum, volume z-score, short-horizon returns and spread
+    #: (see app.ml.features.compute_market_features). Deliberately excludes
+    #: position_pct and drawdown: those depend on the specific quantity being
+    #: risked and are computed by the check itself at evaluation time, the
+    #: same way PositionSizeCheck computes its own ratio. None when the caller
+    #: has not computed a feature vector -- the ML check then passes
+    #: neutrally, same as an absent model.
+    ml_features: dict[str, Decimal] | None = None
 
     def mark(self, symbol: str) -> Decimal | None:
         return self.mark_prices.get(symbol)
