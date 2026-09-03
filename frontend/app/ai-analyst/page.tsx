@@ -1,173 +1,194 @@
 "use client";
 
-import { api } from "@/lib/api";
+import { useState } from "react";
+import { api, ApiError } from "@/lib/api";
 import { useApi } from "@/lib/use-api";
-import { money, num, time } from "@/lib/format";
 import { Badge, Card, ErrorState, Loading } from "@/components/ui";
 import { PageHeader } from "@/components/page-header";
 
 /**
  * AI Analyst.
  *
- * The analyst itself lands in Phase 8. What this page shows now is the data it
- * will read and the tools it will be given — deliberately all read-only. It has
- * no order-placing tool, so "the analyst cannot bypass the risk engine" is a
- * property of its tool registry rather than a promise in a prompt.
+ * A read-only assistant over the platform's own records. Its tool registry
+ * (app/ai/analyst.py on the backend) contains no order-placing or
+ * limit-changing tool, so "the analyst cannot bypass the risk engine" is a
+ * property of that registry -- checked by an architecture test -- rather than
+ * a promise made in a prompt.
  */
 
-const TOOLS = [
-  {
-    name: "get_portfolio",
-    description: "Balances, positions, exposure and P&L as of now.",
-    answers: "Why did my portfolio lose money today?",
-  },
-  {
-    name: "get_risk_decision",
-    description: "One decision with its full check breakdown: observed value, limit and reason.",
-    answers: "Why was my BTC trade rejected?",
-  },
-  {
-    name: "get_strategy_performance",
-    description: "Per-strategy signals, verdict mix and attributed P&L.",
-    answers: "Which strategy performed best?",
-  },
-  {
-    name: "get_trades",
-    description: "Order and fill history, filterable by symbol and period.",
-    answers: "What did I trade this week?",
-  },
-  {
-    name: "get_positions",
-    description: "Open positions with notional, leverage contribution and unrealised P&L.",
-    answers: "What are my riskiest positions?",
-  },
+const SUGGESTIONS = [
+  "Why did my portfolio lose money today?",
+  "Why was my most recent BTC trade rejected?",
+  "Which strategy has performed best?",
+  "What are my riskiest positions right now?",
 ];
 
+interface Turn {
+  question: string;
+  answer?: string;
+  toolsUsed?: string[];
+  error?: string;
+}
+
 export default function AiAnalystPage() {
-  const rejections = useApi(() => api.rejections(3));
-  const portfolio = useApi(() => api.portfolio());
+  const availability = useApi(() => api.aiAnalystAvailability());
+  const [question, setQuestion] = useState("");
+  const [turns, setTurns] = useState<Turn[]>([]);
+  const [asking, setAsking] = useState(false);
+
+  async function ask(q: string) {
+    if (!q.trim() || asking) return;
+    setAsking(true);
+    setQuestion("");
+    setTurns((prev) => [...prev, { question: q }]);
+
+    try {
+      const result = await api.aiAnalystAsk(q);
+      setTurns((prev) =>
+        prev.map((t, i) =>
+          i === prev.length - 1
+            ? { ...t, answer: result.answer, toolsUsed: result.tools_used }
+            : t,
+        ),
+      );
+    } catch (err) {
+      const message = err instanceof ApiError ? err.message : "Something went wrong.";
+      setTurns((prev) =>
+        prev.map((t, i) => (i === prev.length - 1 ? { ...t, error: message } : t)),
+      );
+    } finally {
+      setAsking(false);
+    }
+  }
+
+  if (availability.error) return <ErrorState message={availability.error} />;
 
   return (
     <>
       <PageHeader
         title="AI Analyst"
-        description="A read-only assistant over the platform's own records. It answers from stored decisions rather than inference."
+        description="Ask questions about this account's own portfolio, trades and risk decisions. It answers only from what is actually stored — it cannot place, cancel or resize a trade."
       />
 
-      <Card
-        title="Not yet enabled"
-        subtitle="Scheduled for Phase 8, alongside authentication and audit logging"
-      >
-        <div className="flex items-start gap-3">
-          <Badge tone="accent">Phase 8</Badge>
-          <p className="max-w-2xl text-[13px] leading-relaxed text-ink-2">
-            The analyst will use tool calling against the endpoints this dashboard
-            already consumes. Its tool registry contains <strong>no write
-            operation</strong> — no order placement, no limit changes, no
-            cancellation. That is what makes &ldquo;the analyst cannot bypass the
-            risk engine&rdquo; a structural property rather than an instruction it
-            could be talked out of. A test asserts the registry stays read-only.
-          </p>
-        </div>
-      </Card>
-
-      <Card
-        className="mt-4"
-        title="Planned tools"
-        subtitle="Read-only, one per question the analyst is meant to answer"
-      >
-        <ul className="space-y-3">
-          {TOOLS.map((t) => (
-            <li key={t.name} className="border-b border-rule/60 pb-3 last:border-0 last:pb-0">
-              <div className="flex flex-wrap items-baseline gap-2">
-                <code className="rounded border border-rule bg-sunken px-1.5 py-0.5 font-mono text-[12px] text-accent">
-                  {t.name}
-                </code>
-                <span className="text-[12px] text-muted">{t.description}</span>
-              </div>
-              <p className="mt-1 text-[12px] text-ink-2">
-                <span className="text-muted">Answers: </span>
-                &ldquo;{t.answers}&rdquo;
-              </p>
-            </li>
-          ))}
-        </ul>
-      </Card>
-
-      <Card
-        className="mt-4"
-        title="The data it will read"
-        subtitle="Already stored — these are real records from this account"
-      >
-        {rejections.error ? (
-          <ErrorState message={rejections.error} />
-        ) : rejections.data && portfolio.data ? (
-          <div className="space-y-4">
-            <div className="rounded border border-rule bg-sunken px-3 py-2.5">
-              <p className="mb-1 text-[11px] uppercase tracking-wider text-muted">
-                Example: &ldquo;Why was my last trade rejected?&rdquo;
-              </p>
-              {rejections.data.length ? (
-                <div className="text-[13px] text-ink-2">
-                  <p>
-                    The most recent rejection was{" "}
-                    <span className="font-mono text-ink">
-                      {rejections.data[0].symbol}
-                    </span>{" "}
-                    from{" "}
-                    <span className="font-medium text-ink">
-                      {rejections.data[0].strategy}
-                    </span>{" "}
-                    at {time(rejections.data[0].created_at)}, scoring{" "}
-                    <span className="tabular font-medium text-ink">
-                      {num(rejections.data[0].score).toFixed(0)}
-                    </span>
-                    .
-                  </p>
-                  <ul className="mt-2 space-y-1">
-                    {rejections.data[0].reasons.map((r) => (
-                      <li key={r} className="text-critical">— {r}</li>
-                    ))}
-                  </ul>
-                  <p className="mt-2 text-[12px] text-muted">
-                    Every number in that answer comes from a stored risk decision.
-                    The analyst will not need to infer any of it.
-                  </p>
-                </div>
-              ) : (
-                <p className="text-[13px] text-muted">
-                  No rejections recorded yet.
-                </p>
-              )}
-            </div>
-
-            <div className="rounded border border-rule bg-sunken px-3 py-2.5">
-              <p className="mb-1 text-[11px] uppercase tracking-wider text-muted">
-                Example: &ldquo;What are my riskiest positions?&rdquo;
-              </p>
-              {portfolio.data.positions.length ? (
-                <ul className="space-y-1 text-[13px] text-ink-2">
-                  {[...portfolio.data.positions]
-                    .sort((a, b) => num(b.notional) - num(a.notional))
-                    .map((p) => (
-                      <li key={p.symbol} className="flex justify-between">
-                        <span className="font-mono">{p.symbol}</span>
-                        <span className="tabular">
-                          {money(p.notional)} notional ·{" "}
-                          {((num(p.notional) / num(portfolio.data!.equity)) * 100).toFixed(1)}%
-                          of equity
-                        </span>
-                      </li>
-                    ))}
-                </ul>
-              ) : (
-                <p className="text-[13px] text-muted">No open positions.</p>
-              )}
-            </div>
+      {!availability.data ? (
+        <Loading label="Checking availability" />
+      ) : !availability.data.available ? (
+        <Card title="Not configured">
+          <div className="flex items-start gap-3">
+            <Badge tone="accent">Setup required</Badge>
+            <p className="max-w-2xl text-[13px] leading-relaxed text-ink-2">
+              No <code className="font-mono">ANTHROPIC_API_KEY</code> is set on
+              the backend, so the analyst is disabled. Every other feature on
+              this platform works with no key at all — set the key and restart
+              the API to enable this one.
+            </p>
           </div>
-        ) : (
-          <Loading />
-        )}
+        </Card>
+      ) : (
+        <Card
+          title="Ask a question"
+          subtitle={`Model: ${availability.data.model}`}
+        >
+          <div className="flex flex-col gap-4">
+            {turns.length === 0 && (
+              <div className="flex flex-wrap gap-2">
+                {SUGGESTIONS.map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => ask(s)}
+                    className="rounded border border-rule bg-sunken px-2.5 py-1.5 text-left text-[12px] text-ink-2 hover:bg-accent-soft hover:text-accent"
+                  >
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            <div className="flex flex-col gap-4">
+              {turns.map((turn, i) => (
+                <div key={i} className="border-b border-rule/60 pb-4 last:border-0">
+                  <p className="text-[13px] font-medium text-ink">{turn.question}</p>
+                  {turn.error ? (
+                    <p className="mt-2 text-[13px] text-critical">{turn.error}</p>
+                  ) : turn.answer ? (
+                    <>
+                      <p className="mt-2 whitespace-pre-wrap text-[13px] leading-relaxed text-ink-2">
+                        {turn.answer}
+                      </p>
+                      {turn.toolsUsed && turn.toolsUsed.length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {turn.toolsUsed.map((t, idx) => (
+                            <code
+                              key={`${t}-${idx}`}
+                              className="rounded border border-rule bg-sunken px-1.5 py-0.5 font-mono text-[10px] text-muted"
+                            >
+                              {t}
+                            </code>
+                          ))}
+                        </div>
+                      )}
+                    </>
+                  ) : (
+                    <p className="mt-2 text-[13px] text-muted">Thinking…</p>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                ask(question);
+              }}
+              className="flex gap-2"
+            >
+              <input
+                value={question}
+                onChange={(e) => setQuestion(e.target.value)}
+                placeholder="Ask about your portfolio, trades or risk decisions…"
+                disabled={asking}
+                className="flex-1 rounded border border-rule bg-surface px-3 py-2 text-[13px] text-ink"
+              />
+              <button
+                type="submit"
+                disabled={asking || !question.trim()}
+                className="rounded bg-accent px-4 py-2 text-[13px] font-medium text-white disabled:opacity-50"
+              >
+                {asking ? "Asking…" : "Ask"}
+              </button>
+            </form>
+          </div>
+        </Card>
+      )}
+
+      <Card
+        className="mt-4"
+        title="What it can and cannot do"
+        subtitle="Structural, not a policy the model could be talked out of"
+      >
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
+            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-good">
+              Can
+            </p>
+            <ul className="space-y-1 text-[13px] text-ink-2">
+              <li>Read the current portfolio, positions and P&amp;L</li>
+              <li>Explain a specific risk decision, check by check</li>
+              <li>Compare strategy performance</li>
+              <li>Summarise recent orders and fills</li>
+            </ul>
+          </div>
+          <div>
+            <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-critical">
+              Cannot
+            </p>
+            <ul className="space-y-1 text-[13px] text-ink-2">
+              <li>Place, cancel or resize an order</li>
+              <li>Change a risk limit</li>
+              <li>Bypass the risk engine — it has no tool that could</li>
+            </ul>
+          </div>
+        </div>
       </Card>
     </>
   );

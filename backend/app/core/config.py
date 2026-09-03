@@ -7,7 +7,7 @@ from enum import Enum
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import computed_field, field_validator
+from pydantic import computed_field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -60,6 +60,27 @@ class Settings(BaseSettings):
     paper_commission_rate: Decimal = Decimal("0.0004")
     paper_slippage_bps: Decimal = Decimal("2")
 
+    # --- authentication ----------------------------------------------------
+    #: Signing secret for access tokens. The default is only ever reached in
+    #: a fresh dev checkout; production must set a real secret via
+    #: JWT_SECRET, or every token becomes forgeable by anyone who reads this
+    #: source file.
+    jwt_secret: str = "dev-only-insecure-secret-change-me"
+    jwt_expiry_minutes: int = 60 * 12
+
+    #: Bootstrap admin, created on startup if it does not already exist and
+    #: both are set. Leave unset in an environment where users are created
+    #: another way; nothing else depends on this account existing.
+    bootstrap_admin_username: str | None = None
+    bootstrap_admin_password: str | None = None
+
+    # --- AI Analyst ----------------------------------------------------------
+    anthropic_api_key: str | None = None
+    ai_analyst_model: str = "claude-opus-5"
+    #: Hard ceiling on tool-calling turns per question, independent of any
+    #: token budget -- the loop stops even if Claude keeps requesting tools.
+    ai_analyst_max_tool_turns: int = 6
+
     # --- ML-assisted risk ------------------------------------------------
     #: Whether the risk engine may load a trained adverse-outcome model. Even
     #: when true, the model only engages if one has actually been trained and
@@ -75,6 +96,15 @@ class Settings(BaseSettings):
         if v not in allowed:
             raise ValueError(f"log_level must be one of {sorted(allowed)}")
         return v
+
+    @model_validator(mode="after")
+    def _production_must_not_use_the_dev_secret(self) -> Settings:
+        if self.app_env == "production" and self.jwt_secret == "dev-only-insecure-secret-change-me":
+            raise ValueError(
+                "JWT_SECRET must be set to a real secret in production -- "
+                "refusing to start with every token forgeable from public source."
+            )
+        return self
 
     @computed_field  # type: ignore[prop-decorator]
     @property

@@ -41,7 +41,7 @@ trading disagree, that is a bug — not an expected difference.
 | 5 | Backtesting + analytics | ✅ Complete |
 | 7 | Dashboard (Next.js) | ✅ Complete |
 | 6 | ML-assisted risk (XGBoost) | ✅ Complete |
-| 8 | AI Analyst, auth, deployment | Extension |
+| 8 | AI Analyst, auth, deployment | ✅ Complete |
 
 ---
 
@@ -144,6 +144,8 @@ backend/
 │   ├── analytics/     metrics shared by live trading and backtests
 │   ├── services/      use cases wired to persistence
 │   ├── ml/            adverse-outcome model: features, labels, dataset, training
+│   ├── ai/            AI Analyst: read-only tools + the tool-calling loop
+│   ├── auth/           password hashing, JWT, RBAC dependencies
 │   ├── db/            SQLAlchemy models, repositories, sessions
 │   └── api/           FastAPI routes, schemas, presenters
 ├── alembic/           migrations
@@ -153,9 +155,11 @@ backend/
 └── tests/
 
 frontend/
-├── app/               ten dashboard sections, one route each
+├── app/
+│   ├── login/         sign-in page
+│   └── ...            ten dashboard sections, one route each
 ├── components/        UI primitives and charts
-└── lib/               typed API client, formatting, data hook
+└── lib/               typed API client, auth context, formatting, data hook
 ```
 
 `app/domain` and `app/db` are deliberately separate. The domain layer holds
@@ -228,6 +232,13 @@ a fixed categorical order assigned per entity, so sorting never repaints a
 strategy. Status colours (approve / reduce / reject) are reserved, never reused
 as a series, and always paired with a label so meaning survives colourblindness
 and greyscale.
+
+**The AI Analyst has no tool that could act.** Its tool registry
+(`app/ai/analyst.py`) holds five read-only functions — the same repositories
+the dashboard reads — and nothing that constructs an `Order` or a
+`RiskDecision`. "The analyst cannot bypass the risk engine" is therefore a fact
+an architecture test can fail on (`TestAIAnalystIsolation`), not a sentence in
+a system prompt a clever question could talk it out of.
 
 ---
 

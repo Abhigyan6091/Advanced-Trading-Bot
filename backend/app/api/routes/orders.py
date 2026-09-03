@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.deps import SessionDep
 from app.api.presenters import order_out, signal_out
 from app.api.schemas import OrderOut, SignalOut
+from app.auth.dependencies import require_authenticated
 from app.db.repositories import OrderRepository, SignalRepository
 
-router = APIRouter(prefix="/api", tags=["orders"])
+router = APIRouter(
+    prefix="/api", tags=["orders"], dependencies=[Depends(require_authenticated)]
+)
 
 
 @router.get("/orders", response_model=list[OrderOut])

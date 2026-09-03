@@ -1,8 +1,9 @@
 "use client";
 
 import Link from "next/link";
-import { usePathname } from "next/navigation";
+import { usePathname, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
+import { useAuth } from "@/lib/auth-context";
 
 const SECTIONS = [
   { href: "/", label: "Overview" },
@@ -63,8 +64,53 @@ function ThemeToggle() {
   );
 }
 
+function UserMenu() {
+  const { user, logout } = useAuth();
+  const router = useRouter();
+  if (!user) return null;
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className="text-[11px] text-muted">
+        {user.username} <span className="text-ink-2">· {user.role}</span>
+      </span>
+      <button
+        onClick={() => {
+          logout();
+          router.push("/login");
+        }}
+        className="rounded border border-rule px-2 py-1 text-[11px] text-ink-2 hover:bg-sunken"
+      >
+        Sign out
+      </button>
+    </div>
+  );
+}
+
 export function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
+  const router = useRouter();
+  const { user, loading } = useAuth();
+  const isLoginPage = pathname === "/login";
+
+  useEffect(() => {
+    if (!loading && !user && !isLoginPage) {
+      router.replace("/login");
+    }
+  }, [loading, user, isLoginPage, router]);
+
+  // The login page renders on its own, full-screen, with no sidebar/nav.
+  if (isLoginPage) return <>{children}</>;
+
+  // Waiting to know whether a stored token is valid, or already redirecting:
+  // render nothing rather than flashing protected content or a broken shell.
+  if (loading || !user) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-page">
+        <p className="text-[13px] text-muted">Loading…</p>
+      </div>
+    );
+  }
 
   return (
     <div className="flex min-h-screen">
@@ -121,11 +167,12 @@ export function Shell({ children }: { children: React.ReactNode }) {
               {SECTIONS.find((s) => s.href === pathname)?.label ?? "Overview"}
             </span>
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <span className="rounded border border-rule bg-sunken px-2 py-1 font-mono text-[10px] uppercase tracking-wider text-muted">
               paper broker
             </span>
             <ThemeToggle />
+            <UserMenu />
           </div>
         </header>
 

@@ -4,15 +4,20 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app.api.deps import SessionDep
 from app.api.schemas import StrategyOut
+from app.auth.dependencies import require_authenticated
 from app.core.money import ZERO
 from app.db.models import OrderRow, RiskDecisionRow, SignalRow
 from app.strategies import STRATEGIES, available, build
 
-router = APIRouter(prefix="/api/strategies", tags=["strategies"])
+router = APIRouter(
+    prefix="/api/strategies",
+    tags=["strategies"],
+    dependencies=[Depends(require_authenticated)],
+)
 
 
 @router.get("", response_model=list[StrategyOut])

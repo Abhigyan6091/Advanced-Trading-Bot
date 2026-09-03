@@ -2,16 +2,21 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app.api.deps import ServiceDep, SessionDep
 from app.api.presenters import fill_out, portfolio_out
 from app.api.schemas import EquityPointOut, FillOut, PortfolioOut
+from app.auth.dependencies import require_authenticated
 from app.core.money import ZERO
 from app.db.repositories import FillRepository
 from app.portfolio import Portfolio
 
-router = APIRouter(prefix="/api/portfolio", tags=["portfolio"])
+router = APIRouter(
+    prefix="/api/portfolio",
+    tags=["portfolio"],
+    dependencies=[Depends(require_authenticated)],
+)
 
 
 @router.get("", response_model=PortfolioOut)

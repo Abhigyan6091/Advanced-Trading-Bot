@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from decimal import Decimal
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
 
 from app.analytics import TradeRecord, build_report
 from app.api.deps import ServiceDep, SessionDep
 from app.api.presenters import performance_out, portfolio_out, safe_ratio
 from app.api.schemas import OverviewOut, PerformanceOut
+from app.auth.dependencies import require_authenticated
 from app.core.money import ZERO
 from app.db.repositories import (
     FillRepository,
@@ -21,7 +22,9 @@ from app.db.repositories import (
 from app.domain import Position
 from app.portfolio import Portfolio
 
-router = APIRouter(prefix="/api", tags=["performance"])
+router = APIRouter(
+    prefix="/api", tags=["performance"], dependencies=[Depends(require_authenticated)]
+)
 
 
 @router.get("/performance", response_model=PerformanceOut)

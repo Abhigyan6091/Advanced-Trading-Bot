@@ -14,6 +14,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from app.core.money import ZERO
+from app.db.base import utcnow
 from app.db.models import (
     AuditLogRow,
     FillRow,
@@ -21,6 +22,7 @@ from app.db.models import (
     OrderRow,
     RiskDecisionRow,
     SignalRow,
+    UserRow,
 )
 from app.domain import (
     Fill,
@@ -328,6 +330,7 @@ def utc_days_ago(days: int) -> datetime:
 
 __all__ = [
     "AuditRepository",
+    "UserRepository",
     "FillRepository",
     "InstrumentRepository",
     "OrderRepository",
@@ -337,3 +340,25 @@ __all__ = [
     "utc_day_start",
     "utc_days_ago",
 ]
+
+
+class UserRepository:
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def get_by_username(self, username: str) -> UserRow | None:
+        return self.session.execute(
+            select(UserRow).where(UserRow.username == username)
+        ).scalar_one_or_none()
+
+    def create(self, username: str, password_hash: str, role: str) -> UserRow:
+        row = UserRow(username=username, password_hash=password_hash, role=role)
+        self.session.add(row)
+        self.session.flush()
+        return row
+
+    def record_login(self, user: UserRow) -> None:
+        user.last_login_at = utcnow()
+
+    def any_exist(self) -> bool:
+        return self.session.execute(select(UserRow.id).limit(1)).first() is not None

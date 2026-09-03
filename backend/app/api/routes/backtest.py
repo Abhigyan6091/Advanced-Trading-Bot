@@ -2,17 +2,24 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from app.api.deps import SessionDep
 from app.api.presenters import performance_out
 from app.api.schemas import BacktestOut, BacktestRequest, EquityPointOut
+from app.auth.dependencies import require_role
+from app.auth.roles import Role
 from app.backtest import Backtester
 from app.db.repositories import InstrumentRepository
 from app.marketdata import BarRepository
 from app.strategies import available, build
 
-router = APIRouter(prefix="/api/backtest", tags=["backtesting"])
+router = APIRouter(
+    prefix="/api/backtest",
+    tags=["backtesting"],
+    # Compute-heavy: gated at trader, not just viewer.
+    dependencies=[Depends(require_role(Role.TRADER))],
+)
 
 
 @router.post("", response_model=BacktestOut)

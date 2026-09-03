@@ -27,3 +27,13 @@ python-dotenv==1.0.1
 xgboost==2.1.3
 scikit-learn==1.5.2  # pinned: xgboost 2.1.3's load_model() breaks under sklearn's newer __sklearn_tags__ API
 joblib==1.4.2
+
+# --- Auth ------------------------------------------------------------------
+pyjwt==2.10.1
+bcrypt==4.2.1
+
+# --- Rate limiting -----------------------------------------------------
+slowapi==0.1.9
+
+# --- AI Analyst ----------------------------------------------------------
+anthropic==1.3.0

@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
 from app.api.deps import SessionDep
 from app.api.schemas import BarOut, MarketOut
+from app.auth.dependencies import require_authenticated
 from app.core.money import ZERO, pct_change
 from app.db.repositories import InstrumentRepository
 from app.marketdata import BarRepository, validate_interval
 
-router = APIRouter(prefix="/api/markets", tags=["markets"])
+router = APIRouter(
+    prefix="/api/markets", tags=["markets"], dependencies=[Depends(require_authenticated)]
+)
 
 
 @router.get("", response_model=list[MarketOut])

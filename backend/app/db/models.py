@@ -198,6 +198,27 @@ class FillRow(Base):
     order: Mapped[OrderRow] = relationship(back_populates="fills")
 
 
+class UserRow(Base):
+    """A platform account.
+
+    Passwords are stored as bcrypt hashes only -- never plaintext, never a
+    reversible encryption. Role is a plain string mirroring app.auth.roles.Role
+    rather than a foreign key, since the role set is fixed application logic,
+    not data an operator edits.
+    """
+
+    __tablename__ = "users"
+
+    id: Mapped[UUIDPk]
+    username: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[str] = mapped_column(String(16), default="viewer")
+
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[Timestamp] = mapped_column(default=utcnow)
+    last_login_at: Mapped[Timestamp | None] = mapped_column(nullable=True)
+
+
 class AuditLogRow(Base):
     """Append-only record of every state-changing action.
 

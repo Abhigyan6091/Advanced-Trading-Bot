@@ -55,6 +55,61 @@ class TestDomainPurity:
                     )
 
 
+class TestAIAnalystIsolation:
+    """The AI Analyst assists understanding; it cannot act.
+
+    Structurally the same guarantee as ML and strategy isolation: no tool in
+    its registry may place, cancel, or modify a trade, or touch a risk limit.
+    This is what makes "the analyst cannot bypass the risk engine" a fact a
+    test can fail on, not a sentence in a system prompt the model could be
+    argued out of.
+    """
+
+    FORBIDDEN = ("app.brokers", "app.trading", "app.risk.engine", "binance")
+
+    @pytest.mark.parametrize("path", modules_in("ai"), ids=lambda p: p.name)
+    def test_ai_package_cannot_reach_execution_or_the_risk_engine(self, path):
+        offending = [
+            imp
+            for imp in imports_of(path)
+            for bad in self.FORBIDDEN
+            if imp == bad or imp.startswith(bad + ".")
+        ]
+        assert not offending, f"{path.name} imports execution machinery: {offending}"
+
+    @pytest.mark.parametrize("path", modules_in("ai"), ids=lambda p: p.name)
+    def test_ai_package_does_not_construct_orders_or_decisions(self, path):
+        names = {
+            n.id for n in ast.walk(ast.parse(path.read_text())) if isinstance(n, ast.Name)
+        }
+        assert not names & {"Order", "OrderRequest", "RiskDecision"}, (
+            f"{path.name} references order or decision types"
+        )
+
+    def test_every_declared_tool_maps_to_a_read_only_function(self):
+        """The tool schema list and the dispatch table must name only
+        functions app.ai.tools actually exports -- no tool can be declared
+        to Claude without a corresponding, auditable implementation.
+        """
+        from app.ai import tools as analyst_tools
+        from app.ai.analyst import TOOL_SCHEMAS
+
+        exported = set(analyst_tools.__all__)
+        declared = {schema["name"] for schema in TOOL_SCHEMAS}
+        assert declared <= exported, declared - exported
+
+    def test_no_tool_name_suggests_a_write_operation(self):
+        from app.ai.analyst import TOOL_SCHEMAS
+
+        write_verbs = ("place", "submit", "cancel", "create", "update", "delete", "set")
+        offenders = [
+            s["name"]
+            for s in TOOL_SCHEMAS
+            if any(s["name"].lower().startswith(v) for v in write_verbs)
+        ]
+        assert not offenders, f"tool names suggest a write operation: {offenders}"
+
+
 class TestMLIsolation:
     """The adverse-outcome model assists the risk score; it cannot trade.
 
