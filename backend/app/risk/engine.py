@@ -24,6 +24,7 @@ constraint that is categorical rather than gradual.
 from __future__ import annotations
 
 import uuid
+from datetime import datetime
 from decimal import Decimal
 
 from app.core.logging import get_logger
@@ -73,8 +74,14 @@ class RiskEngine:
         account: AccountSnapshot,
         signal_id: uuid.UUID | None = None,
         instrument: Instrument | None = None,
+        now: datetime | None = None,
     ) -> RiskDecision:
-        """Assess a proposed trade and return a persistable decision."""
+        """Assess a proposed trade and return a persistable decision.
+
+        ``now`` stamps the decision. A replay passes the bar's own time so the
+        stored history spans the period it simulates rather than collapsing
+        onto the moment the replay ran.
+        """
         if quantity <= ZERO:
             raise ValueError("quantity must be positive")
         if price <= ZERO:
@@ -110,6 +117,7 @@ class RiskEngine:
             requested_quantity=quantity,
             approved_quantity=approved,
             checks=results,
+            **({"created_at": now} if now is not None else {}),
         )
 
         log.info(
@@ -131,6 +139,7 @@ class RiskEngine:
         quantity: Decimal,
         account: AccountSnapshot,
         instrument: Instrument | None = None,
+        now: datetime | None = None,
     ) -> RiskDecision:
         """Assess a strategy signal. HOLD signals are not tradeable."""
         if not signal.is_actionable:
@@ -143,6 +152,7 @@ class RiskEngine:
             account=account,
             signal_id=signal.id,
             instrument=instrument,
+            now=now,
         )
 
     # --- scoring -------------------------------------------------------

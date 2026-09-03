@@ -1,0 +1,148 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ---------------------------------------------------------------------------
+   Tokens.
+
+   Two colour systems, kept apart on purpose:
+
+   * brand/UI  -- petrol teal. Navigation, focus rings, interactive affordances.
+   * data      -- the validated categorical slots and the reserved status
+                  palette. A status colour never doubles as a series colour, and
+                  a series colour is never used to mean "good" or "bad".
+
+   Every token is declared on bare :root first, so the un-stamped (system)
+   theme resolves correctly; the media query and the [data-theme] scope only
+   redefine values.
+   --------------------------------------------------------------------------- */
+:root {
+  color-scheme: light;
+
+  --font-sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "JetBrains Mono", Menlo, monospace;
+
+  --page: #f6f7f7;
+  --surface: #ffffff;
+  --sunken: #eef1f1;
+  --ink: #101a1f;
+  --ink-2: #37484f;
+  --muted: #6b7c84;
+  --rule: #dfe5e7;
+
+  --accent: #0e6b76;
+  --accent-soft: #e2f0f1;
+
+  /* Reserved status palette -- never used for series identity. */
+  --good: #0ca30c;
+  --warning: #fab219;
+  --critical: #d03b3b;
+  --good-bg: #e6f4e6;
+  --warning-bg: #fdf3dd;
+  --critical-bg: #fae6e6;
+
+  /* Categorical series slots, in fixed order. Never cycled. */
+  --series-1: #2a78d6;
+  --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
+
+  --grid: #e7ebec;
+  --axis: #c3ccd0;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    color-scheme: dark;
+
+    --page: #0e1113;
+    --surface: #171b1e;
+    --sunken: #12161a;
+    --ink: #e6edef;
+    --ink-2: #bccace;
+    --muted: #8b9aa1;
+    --rule: #253036;
+
+    --accent: #45aeb8;
+    --accent-soft: #123336;
+
+    --good: #0ca30c;
+    --warning: #fab219;
+    --critical: #d03b3b;
+    --good-bg: #10240f;
+    --warning-bg: #2b2312;
+    --critical-bg: #2b1414;
+
+    --series-1: #3987e5;
+    --series-2: #d95926;
+    --series-3: #199e70;
+    --series-4: #c98500;
+
+    --grid: #222c31;
+    --axis: #35434a;
+  }
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+
+  --page: #0e1113;
+  --surface: #171b1e;
+  --sunken: #12161a;
+  --ink: #e6edef;
+  --ink-2: #bccace;
+  --muted: #8b9aa1;
+  --rule: #253036;
+
+  --accent: #45aeb8;
+  --accent-soft: #123336;
+
+  --good: #0ca30c;
+  --warning: #fab219;
+  --critical: #d03b3b;
+  --good-bg: #10240f;
+  --warning-bg: #2b2312;
+  --critical-bg: #2b1414;
+
+  --series-1: #3987e5;
+  --series-2: #d95926;
+  --series-3: #199e70;
+  --series-4: #c98500;
+
+  --grid: #222c31;
+  --axis: #35434a;
+}
+
+html,
+body {
+  background: var(--page);
+  color: var(--ink);
+  font-family: var(--font-sans);
+}
+
+/* Digits that sit in columns must align. */
+.tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+::selection {
+  background: var(--accent-soft);
+}
+
+*:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Recharts paints its own surfaces; force them onto our tokens. */
+.recharts-surface { overflow: visible; }
+.recharts-cartesian-axis-tick text { fill: var(--muted); }

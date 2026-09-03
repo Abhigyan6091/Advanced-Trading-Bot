@@ -188,6 +188,9 @@ class Backtester:
                     # Fill at the NEXT bar's open, the first price actually
                     # obtainable after the decision.
                     broker.set_mark(symbol, execution_bar.open)
+                    # Stamp the decision, order and fill with the bar they
+                    # happened on rather than wall-clock time.
+                    pipeline.set_time(execution_bar.open_time)
                     outcome = pipeline.handle_signal(signal)
                     result.outcomes.append(outcome)
 

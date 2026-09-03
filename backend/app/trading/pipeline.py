@@ -14,9 +14,11 @@ Risk dashboard displays and what the AI Analyst reads to explain a refusal.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from decimal import Decimal
 
 from app.brokers.base import Broker, BrokerError
+from app.brokers.paper import PaperBroker
 from app.core.logging import get_logger
 from app.core.money import ZERO, D
 from app.domain import (
@@ -90,6 +92,16 @@ class TradingPipeline:
         self.default_risk_fraction = D(default_risk_fraction)
         self.history: list[TradeOutcome] = []
 
+        # Simulation clock. None means wall-clock time; a replay sets it per
+        # bar so decisions and orders carry the times they would really have.
+        self._now: datetime | None = None
+
+    def set_time(self, when: datetime | None) -> None:
+        """Set the clock used to stamp decisions and orders."""
+        self._now = when
+        if isinstance(self.broker, PaperBroker):
+            self.broker.set_time(when)
+
     # --- main entry point ----------------------------------------------
 
     def handle_signal(
@@ -118,6 +130,7 @@ class TradingPipeline:
             quantity=requested,
             account=self.portfolio.snapshot().to_account(volatility=volatility),
             instrument=instrument,
+            now=self._now,
         )
 
         if not decision.permits_order:
@@ -150,6 +163,7 @@ class TradingPipeline:
             signal_id=signal.id,
             risk_decision_id=decision.id,
             quantity=decision.approved_quantity,
+            now=self._now,
         )
 
         try:

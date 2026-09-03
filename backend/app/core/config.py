@@ -36,6 +36,11 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_format: Literal["json", "console"] = "json"
 
+    #: Origins allowed to call the API from a browser. The dashboard runs on
+    #: a different origin in development, so this cannot be empty there; it is
+    #: an explicit allowlist rather than a wildcard so credentials stay safe.
+    cors_origins: str = "http://localhost:3000,http://127.0.0.1:3000"
+
     # --- database ------------------------------------------------------
     postgres_user: str = "sta"
     postgres_password: str = "sta_dev_password"
@@ -71,6 +76,10 @@ class Settings(BaseSettings):
             f"postgresql+psycopg://{self.postgres_user}:{self.postgres_password}"
             f"@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
         )
+
+    @property
+    def allowed_origins(self) -> list[str]:
+        return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
 
     @property
     def testnet_credentials_present(self) -> bool:

@@ -117,16 +117,21 @@ class TestRiskIsMandatory:
             ]
             assert not offending, f"{path.name} imports execution machinery: {offending}"
 
-    def test_only_the_risk_package_constructs_a_decision(self):
-        """A RiskDecision built elsewhere would be a rubber stamp."""
-        allowed = {"risk", "domain", "tests"}
+    def test_no_layer_mints_its_own_risk_decision(self):
+        """A RiskDecision authored outside the risk engine is a rubber stamp.
+
+        The persistence layer is exempt: reading a stored decision back is
+        rehydration, not authorship, and the round trip has to reconstruct the
+        object somewhere. Every layer that could otherwise fabricate an
+        authorisation for itself is covered.
+        """
+        banned = {"trading", "brokers", "api", "services", "strategies", "portfolio", "backtest"}
         offenders = []
         for path in APP.rglob("*.py"):
             package = path.relative_to(APP).parts[0] if path.parent != APP else "app"
-            if package in allowed:
+            if package not in banned:
                 continue
-            tree = ast.parse(path.read_text())
-            for node in ast.walk(tree):
+            for node in ast.walk(ast.parse(path.read_text())):
                 if (
                     isinstance(node, ast.Call)
                     and isinstance(node.func, ast.Name)
@@ -134,6 +139,27 @@ class TestRiskIsMandatory:
                 ):
                     offenders.append(str(path.relative_to(APP)))
         assert not offenders, f"RiskDecision constructed outside the risk layer: {offenders}"
+
+    def test_the_repository_only_rehydrates_persisted_decisions(self):
+        """The one exemption is narrow: a classmethod that reads a stored row."""
+        source = (APP / "db" / "repositories.py").read_text()
+        tree = ast.parse(source)
+
+        constructing_functions = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef):
+                for inner in ast.walk(node):
+                    if (
+                        isinstance(inner, ast.Call)
+                        and isinstance(inner.func, ast.Name)
+                        and inner.func.id == "RiskDecision"
+                    ):
+                        constructing_functions.add(node.name)
+
+        assert constructing_functions == {"to_domain"}, (
+            "RiskDecision may only be reconstructed in the repository's "
+            f"to_domain rehydrator, not in {sorted(constructing_functions)}"
+        )
 
 
 class TestSingleExecutionPath:

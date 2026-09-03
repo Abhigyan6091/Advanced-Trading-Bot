@@ -143,6 +143,7 @@ class Order(BaseModel):
         signal_id: uuid.UUID | None = None,
         risk_decision_id: uuid.UUID | None = None,
         quantity: Decimal | None = None,
+        now: datetime | None = None,
     ) -> Order:
         """Build an order from a request.
 
@@ -161,6 +162,7 @@ class Order(BaseModel):
             price=request.price,
             stop_price=request.stop_price,
             time_in_force=request.time_in_force,
+            **({"created_at": now, "updated_at": now} if now is not None else {}),
         )
 
     def transition_to(self, status: OrderStatus, **changes: object) -> Order:

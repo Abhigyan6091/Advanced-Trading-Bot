@@ -94,6 +94,10 @@ class BaseStrategy(ABC):
             reference_price=last.close,
             # Always the last closed bar. A subclass cannot influence this.
             bar_close_time=last.close_time,
+            # A signal exists from the moment its bar closes. In live trading
+            # that is within milliseconds of now; in a replay it is the bar's
+            # own time, which keeps stored history coherent either way.
+            created_at=last.close_time,
             features={**self.parameters, **decision.features},
         )
 

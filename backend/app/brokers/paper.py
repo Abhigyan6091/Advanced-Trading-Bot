@@ -10,6 +10,7 @@ backtest, because it produces confident numbers that are wrong.
 
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 
 from app.brokers.base import BrokerError, DuplicateOrder, OrderRejected
@@ -46,11 +47,21 @@ class PaperBroker:
         self._fills: dict[str, list[Fill]] = {}
         self._marks: dict[str, Decimal] = {}
 
+        # Simulation clock. When unset, fills are stamped with wall-clock time.
+        # A replay (backtest or seed) advances it per bar so the fill ledger
+        # carries the times the trades would actually have happened, and any
+        # curve derived from that ledger has a meaningful time axis.
+        self._now: datetime | None = None
+
     # --- market state --------------------------------------------------
 
     def set_mark(self, symbol: str, price: Decimal | str) -> None:
         """Set the price used to fill subsequent orders in ``symbol``."""
         self._marks[symbol] = D(price)
+
+    def set_time(self, when: datetime | None) -> None:
+        """Set the simulation clock. ``None`` restores wall-clock time."""
+        self._now = when
 
     def mark(self, symbol: str) -> Decimal | None:
         return self._marks.get(symbol)
@@ -135,6 +146,7 @@ class PaperBroker:
             price=price,
             commission=commission,
             exchange_trade_id=f"paper-trade-{order.client_order_id[-12:]}",
+            **({"executed_at": self._now} if self._now is not None else {}),
         )
         self._fills[order.client_order_id].append(fill)
 

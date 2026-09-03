@@ -37,9 +37,40 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    from app.api.routes import health
+    from fastapi.middleware.cors import CORSMiddleware
 
-    app.include_router(health.router)
+    from app.api.routes import (
+        backtest,
+        health,
+        markets,
+        orders,
+        performance,
+        portfolio,
+        risk,
+        strategies,
+    )
+
+    # The dashboard is served from a different origin. An explicit allowlist
+    # rather than a wildcard, so credentialed requests stay safe.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=settings.allowed_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+    for module in (
+        health,
+        performance,
+        portfolio,
+        risk,
+        orders,
+        markets,
+        strategies,
+        backtest,
+    ):
+        app.include_router(module.router)
     return app
 
 

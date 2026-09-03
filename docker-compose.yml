@@ -32,6 +32,7 @@ services:
       LOG_FORMAT: ${LOG_FORMAT:-json}
       # Paper is the default: the stack runs with no exchange credentials.
       BROKER: ${BROKER:-paper}
+      CORS_ORIGINS: ${CORS_ORIGINS:-http://localhost:3000,http://127.0.0.1:3000}
     ports:
       - "${API_HOST_PORT:-8000}:8000"
     depends_on:
@@ -41,6 +42,18 @@ services:
     command: >
       sh -c "alembic upgrade head &&
              uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  dashboard:
+    build:
+      context: ./frontend
+      args:
+        # Baked in at build time: Next.js inlines NEXT_PUBLIC_* into the
+        # client bundle, so this is the URL the browser will call.
+        NEXT_PUBLIC_API_URL: ${PUBLIC_API_URL:-http://localhost:8000}
+    ports:
+      - "${DASHBOARD_HOST_PORT:-3000}:3000"
+    depends_on:
+      - api
 
 volumes:
   pgdata:
