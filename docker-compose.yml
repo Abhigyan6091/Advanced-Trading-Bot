@@ -1,0 +1,46 @@
+name: strategic-trade-analyzer
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-sta}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sta_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-sta}
+    ports:
+      # Published host port. Change POSTGRES_HOST_PORT if you already
+      # run PostgreSQL locally on 5432.
+      - "${POSTGRES_HOST_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sta} -d ${POSTGRES_DB:-sta}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ./backend
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_PORT: 5432
+      POSTGRES_USER: ${POSTGRES_USER:-sta}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-sta_dev_password}
+      POSTGRES_DB: ${POSTGRES_DB:-sta}
+      APP_ENV: ${APP_ENV:-development}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      # Paper is the default: the stack runs with no exchange credentials.
+      BROKER: ${BROKER:-paper}
+    ports:
+      - "${API_HOST_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+    # Migrations run before the API accepts traffic.
+    command: >
+      sh -c "alembic upgrade head &&
+             uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+volumes:
+  pgdata:

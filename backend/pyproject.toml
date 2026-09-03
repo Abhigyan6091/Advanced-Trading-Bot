@@ -1,0 +1,32 @@
+[project]
+name = "strategic-trade-analyzer"
+version = "0.1.0"
+description = "Intelligent Trading & Risk Analysis Platform"
+requires-python = ">=3.10"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-q --strict-markers -m 'not integration'"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+    "integration: requires a live PostgreSQL database",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+plugins = ["pydantic.mypy"]
+
+[[tool.mypy.overrides]]
+module = ["binance.*"]
+ignore_missing_imports = true
