@@ -55,6 +55,55 @@ class TestDomainPurity:
                     )
 
 
+class TestStrategyIsolation:
+    """Strategies propose; they cannot execute.
+
+    This is the structural half of the "no trade bypasses risk" guarantee. If a
+    strategy could import a broker or construct an Order, the risk engine would
+    become advisory rather than mandatory.
+    """
+
+    FORBIDDEN = (
+        "app.brokers",
+        "app.db",
+        "app.api",
+        "app.portfolio",
+        "app.execution",
+        "binance",
+        "sqlalchemy",
+    )
+
+    @pytest.mark.parametrize("path", modules_in("strategies"), ids=lambda p: p.name)
+    def test_strategies_cannot_reach_execution(self, path):
+        offending = [
+            imp
+            for imp in imports_of(path)
+            for bad in self.FORBIDDEN
+            if imp == bad or imp.startswith(bad + ".")
+        ]
+        assert not offending, f"{path.name} imports execution machinery: {offending}"
+
+    @pytest.mark.parametrize("path", modules_in("strategies"), ids=lambda p: p.name)
+    def test_strategies_do_not_name_order_types(self, path):
+        """Not even by name: sizing and order construction are not theirs."""
+        names = {
+            n.id
+            for n in ast.walk(ast.parse(path.read_text()))
+            if isinstance(n, ast.Name)
+        }
+        assert not names & {"Order", "OrderRequest", "Fill", "Position"}, (
+            f"{path.name} references order or position types"
+        )
+
+
+class TestMarketDataIsolation:
+    def test_market_data_does_not_depend_on_strategies(self):
+        """Data flows into strategies, never the other way around."""
+        for path in modules_in("marketdata"):
+            offending = [i for i in imports_of(path) if i.startswith("app.strategies")]
+            assert not offending, f"{path.name} imports strategies: {offending}"
+
+
 class TestNoLiveTrading:
     """Real-money execution must be absent, not merely switched off."""
 

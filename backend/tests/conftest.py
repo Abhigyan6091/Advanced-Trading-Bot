@@ -66,3 +66,40 @@ def make_fill(
         commission=Decimal(commission),
         executed_at=at,
     )
+
+
+def make_bars(
+    closes: list[str | int | float],
+    *,
+    symbol: str = "BTCUSDT",
+    start: datetime = T0,
+    interval_minutes: int = 60,
+    spread: str = "0.005",
+) -> list[Bar]:
+    """Build a chronological bar series from a list of close prices.
+
+    High and low are derived from the close by a fixed fraction, which keeps
+    the OHLC invariants satisfied without the fixture having to state four
+    numbers per bar.
+    """
+    step = timedelta(minutes=interval_minutes)
+    pad = Decimal(spread)
+    bars: list[Bar] = []
+    prev_close: Decimal | None = None
+    for i, c in enumerate(closes):
+        close = Decimal(str(c))
+        open_ = prev_close if prev_close is not None else close
+        bars.append(
+            Bar(
+                symbol=symbol,
+                open_time=start + i * step,
+                close_time=start + (i + 1) * step,
+                open=open_,
+                high=max(open_, close) * (1 + pad),
+                low=min(open_, close) * (1 - pad),
+                close=close,
+                volume=Decimal("10"),
+            )
+        )
+        prev_close = close
+    return bars
