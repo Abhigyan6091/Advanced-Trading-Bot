@@ -45,6 +45,17 @@ class RiskCheckResult(BaseModel):
 
     reason: str = ""
 
+    @property
+    def utilisation(self) -> Decimal | None:
+        """How far into the limit the observation reached. 1.0 is exactly at it.
+
+        ``None`` when the check reports no measurable ratio, which is different
+        from a utilisation of zero.
+        """
+        if self.observed is None or self.limit is None or self.limit == 0:
+            return None
+        return self.observed / self.limit
+
     @model_validator(mode="after")
     def _failed_checks_explain_themselves(self) -> RiskCheckResult:
         if not self.passed and not self.reason:

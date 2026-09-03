@@ -104,6 +104,38 @@ class TestMarketDataIsolation:
             assert not offending, f"{path.name} imports strategies: {offending}"
 
 
+class TestRiskIsMandatory:
+    """The risk engine is the only path from a signal to an order."""
+
+    def test_risk_engine_does_not_import_execution(self):
+        """It decides; it does not place. Sizing must not become submitting."""
+        for path in modules_in("risk"):
+            offending = [
+                i
+                for i in imports_of(path)
+                if i.startswith(("app.brokers", "app.execution", "app.api")) or i == "binance"
+            ]
+            assert not offending, f"{path.name} imports execution machinery: {offending}"
+
+    def test_only_the_risk_package_constructs_a_decision(self):
+        """A RiskDecision built elsewhere would be a rubber stamp."""
+        allowed = {"risk", "domain", "tests"}
+        offenders = []
+        for path in APP.rglob("*.py"):
+            package = path.relative_to(APP).parts[0] if path.parent != APP else "app"
+            if package in allowed:
+                continue
+            tree = ast.parse(path.read_text())
+            for node in ast.walk(tree):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Name)
+                    and node.func.id == "RiskDecision"
+                ):
+                    offenders.append(str(path.relative_to(APP)))
+        assert not offenders, f"RiskDecision constructed outside the risk layer: {offenders}"
+
+
 class TestNoLiveTrading:
     """Real-money execution must be absent, not merely switched off."""
 
