@@ -50,7 +50,6 @@ class Settings(BaseSettings):
 
     # --- execution -----------------------------------------------------
     broker: BrokerKind = BrokerKind.PAPER
-    allow_live_trading: bool = False
 
     binance_api_key: str | None = None
     binance_api_secret: str | None = None

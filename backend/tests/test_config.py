@@ -24,8 +24,18 @@ class TestDefaults:
     def test_paper_is_the_default_broker(self):
         assert settings().broker is BrokerKind.PAPER
 
-    def test_live_trading_is_off_by_default(self):
-        assert settings().allow_live_trading is False
+    def test_live_trading_cannot_be_configured_on_at_all(self):
+        """The real guarantee, replacing a test of an inert flag.
+
+        There used to be an ALLOW_LIVE_TRADING setting here. It was defined
+        and documented but read by nothing -- a control that looked like a
+        safety switch and did nothing, which is worse than no switch at all.
+        Safety comes from BrokerKind having no live member, so no
+        configuration value can select one.
+        """
+        assert {b.value for b in BrokerKind} == {"paper", "testnet"}
+        with pytest.raises(ValueError):
+            settings(broker="live")
 
     def test_no_credentials_needed_for_paper(self):
         s = settings()

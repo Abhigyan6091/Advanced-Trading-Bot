@@ -22,6 +22,10 @@ def health() -> dict[str, Any]:
         "app": settings.app_name,
         "env": settings.app_env,
         "broker": settings.broker.value,
+        # Hardcoded, not read from config: there is no live broker in
+        # this codebase to enable, so this is a structural fact rather
+        # than a setting. A flag here would imply a control that does
+        # not exist -- see BrokerKind, which has no live member.
         "live_trading": False,
     }
 
