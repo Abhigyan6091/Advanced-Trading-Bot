@@ -136,6 +136,41 @@ class TestRiskIsMandatory:
         assert not offenders, f"RiskDecision constructed outside the risk layer: {offenders}"
 
 
+class TestSingleExecutionPath:
+    """Only the trading pipeline may turn a signal into an order."""
+
+    def test_only_the_pipeline_constructs_orders(self):
+        allowed = {"trading", "domain", "brokers"}
+        offenders = []
+        for path in APP.rglob("*.py"):
+            package = path.relative_to(APP).parts[0] if path.parent != APP else "app"
+            if package in allowed:
+                continue
+            for node in ast.walk(ast.parse(path.read_text())):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "from_request"
+                ):
+                    offenders.append(str(path.relative_to(APP)))
+        assert not offenders, f"orders constructed outside the pipeline: {offenders}"
+
+    def test_the_pipeline_depends_on_the_risk_engine(self):
+        """If the pipeline could execute without risk, the gate is decorative."""
+        imports = imports_of(APP / "trading" / "pipeline.py")
+        assert any(i.startswith("app.risk") for i in imports)
+
+    def test_brokers_do_not_import_strategies_or_risk(self):
+        """A broker executes what it is given; it does not decide."""
+        for path in modules_in("brokers"):
+            offending = [
+                i
+                for i in imports_of(path)
+                if i.startswith(("app.strategies", "app.risk", "app.trading"))
+            ]
+            assert not offending, f"{path.name} reaches into decision logic: {offending}"
+
+
 class TestNoLiveTrading:
     """Real-money execution must be absent, not merely switched off."""
 
